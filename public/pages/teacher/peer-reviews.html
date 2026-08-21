@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Peer Reviews - Teacher</title>
+<link rel="stylesheet" href="/css/style.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+<style>
+.avg-circle { width:70px; height:70px; border-radius:50%; background:conic-gradient(var(--primary) calc(var(--pct)*3.6deg), var(--border) 0); display:flex; align-items:center; justify-content:center; position:relative; }
+.avg-circle::before { content:''; width:52px; height:52px; background:var(--card); border-radius:50%; position:absolute; }
+.avg-circle span { position:absolute; font-size:15px; font-weight:700; color:var(--primary); }
+.summary-card { background:var(--bg); border-radius:10px; padding:16px; border:1px solid var(--border); margin-bottom:12px; }
+.score-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-top:10px; }
+.score-cell { text-align:center; padding:8px; background:var(--card); border-radius:8px; }
+.score-cell .label { font-size:10px; color:var(--muted); text-transform:uppercase; }
+.score-cell .val { font-size:18px; font-weight:700; color:var(--primary); }
+.review-item { padding:14px; background:var(--bg); border-radius:8px; margin-bottom:8px; border:1px solid var(--border); }
+</style>
+</head>
+<body>
+<div class="app-layout">
+<header class="topbar">
+<div class="topbar-left"><button class="hamburger" id="hamburgerBtn"><i class="fas fa-bars"></i></button><a href="../../index.html" class="logo">DIU WorkSync</a></div>
+<div class="topbar-right">
+<button class="theme-toggle" id="themeToggle"><i class="fas fa-moon"></i></button>
+<div class="user-info"><i class="fas fa-user-circle"></i><span id="userName"></span><span id="roleBadge" class="role-badge role-teacher">Teacher</span></div>
+<button class="logout-btn" onclick="Session.logout()"><i class="fas fa-sign-out-alt"></i></button>
+</div>
+</header>
+<div class="sidebar-overlay" id="sidebarOverlay"></div>
+<aside class="sidebar" id="sidebar">
+<nav class="sidebar-nav">
+<div class="nav-section">Main</div>
+<a href="dashboard.html" class="nav-link"><i class="fas fa-tachometer-alt"></i> Dashboard</a>
+<a href="courses.html" class="nav-link"><i class="fas fa-book"></i> Courses</a>
+<a href="projects.html" class="nav-link"><i class="fas fa-project-diagram"></i> Projects</a>
+<a href="tasks.html" class="nav-link"><i class="fas fa-tasks"></i> Tasks</a>
+<div class="nav-section">Management</div>
+<a href="submissions.html" class="nav-link"><i class="fas fa-file-upload"></i> Submissions</a>
+<a href="reports.html" class="nav-link"><i class="fas fa-chart-bar"></i> Reports</a>
+<a href="announcements.html" class="nav-link"><i class="fas fa-bullhorn"></i> Announcements</a>
+<div class="nav-divider"></div>
+<a href="peer-reviews.html" class="nav-link active"><i class="fas fa-users"></i> Peer Reviews</a>
+<a href="#" class="nav-link logout" onclick="Session.logout()"><i class="fas fa-sign-out-alt"></i> Logout</a>
+</nav>
+</aside>
+<main class="main-content">
+<div class="card" style="margin-bottom:20px">
+<div class="card-header"><i class="fas fa-project-diagram"></i> Select Project</div>
+<div class="form-group"><select class="form-control" id="projectSelect" onchange="loadProject(this.value)" style="max-width:400px"><option value="">-- Choose Project --</option></select></div>
+</div>
+<div id="summarySection" style="display:none">
+<div class="card" style="margin-bottom:20px">
+<div class="card-header"><i class="fas fa-chart-pie"></i> Peer Review Summary by Member</div>
+<div id="summaryContent"></div>
+</div>
+<div class="card">
+<div class="card-header"><i class="fas fa-list"></i> All Reviews</div>
+<div id="reviewsContent"></div>
+</div>
+</main>
+<footer class="main-footer">&copy; 2026 DIU WorkSync</footer>
+</div>
+<script src="/js/app.js"></script>
+<script>
+requireAuth(); requireRole("teacher");
+const s = Session.get();
+$("#userName").textContent = s.name;
+
+let currentProjectId = null;
+
+(async function init() {
+  const projects = await apiFetch("/projects");
+  const sel = $("#projectSelect");
+  (projects || []).forEach(p => {
+    sel.append("<option value='" + p.id + "'>" + escapeHtml(p.title) + " - " + escapeHtml(p.group_name || "Group") + "</option>");
+  });
+})();
+
+async function loadProject(projectId) {
+  if (!projectId) { $("#summarySection").style.display = "none"; return; }
+  currentProjectId = projectId;
+  const [reviews, summary] = await Promise.all([
+    apiFetch("/peer_reviews/" + projectId),
+    apiFetch("/peer_reviews/" + projectId + "/summary"),
+  ]);
+  $("#summarySection").style.display = "block";
+  renderSummary(summary || []);
+  renderReviews(reviews || []);
+}
+
+function renderSummary(summary) {
+  const el = $("#summaryContent");
+  if (!summary.length) { el.innerHTML = "<div class='empty-state'><i class='fas fa-chart-pie'></i><p>No peer reviews yet</p></div>"; return; }
+  el.innerHTML = summary.map(m => {
+    const avg = ((m.avg_contribution + m.avg_cooperation + m.avg_communication + m.avg_responsibility) / 4).toFixed(1);
+    return "<div class='summary-card'>" +
+      "<div style='display:flex;align-items:center;gap:16px'>" +
+        "<div class='avg-circle' style='--pct:"+avg+ "'><span>" + avg + "</span></div>" +
+        "<div style='flex:1'><strong style='font-size:16px'>" + escapeHtml(m.name) + "</strong>" +
+          "<div style='font-size:12px;color:var(--muted);margin-top:4px'>" + m.review_count + " peer review(s) received</div>" +
+        "</div>" +
+      "</div>" +
+      "<div class='score-grid'>" +
+        "<div class='score-cell'><div class='label'>Contribution</div><div class='val'>" + m.avg_contribution.toFixed(1) + "</div></div>" +
+        "<div class='score-cell'><div class='label'>Cooperation</div><div class='val'>" + m.avg_cooperation.toFixed(1) + "</div></div>" +
+        "<div class='score-cell'><div class='label'>Communication</div><div class='val'>" + m.avg_communication.toFixed(1) + "</div></div>" +
+        "<div class='score-cell'><div class='label'>Responsibility</div><div class='val'>" + m.avg_responsibility.toFixed(1) + "</div></div>" +
+      "</div>" +
+    "</div>";
+  }).join("");
+}
+
+function renderReviews(reviews) {
+  const el = $("#reviewsContent");
+  if (!reviews.length) { el.innerHTML = "<div class='empty-state'><i class='fas fa-list'></i><p>No reviews for this project</p></div>"; return; }
+  el.innerHTML = reviews.map(r => "<div class='review-item'>" +
+    "<div style='display:flex;justify-content:space-between'><strong>" + escapeHtml(r.reviewed_name) + "</strong><span class='text-muted'>Reviewed by " + escapeHtml(r.reviewer_name) + "</span></div>" +
+    "<div style='display:flex;gap:8px;margin-top:8px;flex-wrap:wrap'>" +
+      "<span class='badge badge-primary'>Contribution: " + r.contribution_score + "</span>" +
+      "<span class='badge badge-success'>Cooperation: " + r.cooperation_score + "</span>" +
+      "<span class='badge badge-info'>Communication: " + r.communication_score + "</span>" +
+      "<span class='badge badge-warning'>Responsibility: " + r.responsibility_score + "</span>" +
+    "</div>" +
+    (r.comment ? "<div style='margin-top:8px;font-size:13px;color:var(--muted);font-style:italic'>\"" + escapeHtml(r.comment) + "\"</div>" : "") +
+    "<div style='margin-top:6px;font-size:11px;color:var(--muted)'>" + formatDateTime(r.submitted_at) + "</div>" +
+  "</div>").join("");
+}
+</script>
+</body>
+</html>

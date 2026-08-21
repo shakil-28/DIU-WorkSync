@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Submit Task</title>
+<link rel="stylesheet" href="/css/style.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+</head>
+<body>
+<div class="app-layout">
+<header class="topbar">
+<div class="topbar-left"><button class="hamburger" id="hamburgerBtn"><i class="fas fa-bars"></i></button><a href="../../index.html" class="logo">DIU WorkSync</a></div>
+<div class="topbar-right">
+<button class="theme-toggle" id="themeToggle"><i class="fas fa-moon"></i></button>
+<div class="user-info"><i class="fas fa-user-circle"></i><span id="userName"></span><span id="roleBadge" class="role-badge role-student">Student</span></div>
+<button class="logout-btn" onclick="Session.logout()"><i class="fas fa-sign-out-alt"></i></button>
+</div>
+</header>
+<div class="sidebar-overlay" id="sidebarOverlay"></div>
+<aside class="sidebar" id="sidebar">
+<nav class="sidebar-nav">
+<div class="nav-section">Main</div>
+<a href="dashboard.html" class="nav-link"><i class="fas fa-tachometer-alt"></i> Dashboard</a>
+<a href="my-courses.html" class="nav-link"><i class="fas fa-book"></i> My Courses</a>
+<a href="my-tasks.html" class="nav-link"><i class="fas fa-tasks"></i> My Tasks</a>
+<a href="my-projects.html" class="nav-link"><i class="fas fa-project-diagram"></i> My Projects</a>
+<div class="nav-section">More</div>
+<a href="my-submissions.html" class="nav-link"><i class="fas fa-file-upload"></i> Submissions</a>
+<a href="contribution-report.html" class="nav-link"><i class="fas fa-chart-pie"></i> My Contribution</a>
+<a href="activity.html" class="nav-link"><i class="fas fa-history"></i> Activity</a>
+<a href="profile.html" class="nav-link"><i class="fas fa-user"></i> Profile</a>
+<div class="nav-divider"></div>
+<a href="#" class="nav-link logout" onclick="Session.logout()"><i class="fas fa-sign-out-alt"></i> Logout</a>
+</nav>
+</aside>
+<main class="main-content">
+<div class="card">
+<div class="card-header"><i class="fas fa-paper-plane"></i> Submit Task</div>
+<div id="taskInfo" class="alert alert-info" style="margin-bottom:20px"></div>
+
+<!-- File Upload Section -->
+<div class="card" style="margin-bottom:20px;border:2px dashed var(--border)">
+<div class="card-header"><i class="fas fa-cloud-upload-alt"></i> Upload File (Optional)</div>
+<div class="form-group">
+<label>Choose File</label>
+<div class="upload-area" id="uploadArea" onclick="document.getElementById('fileInput').click()">
+<i class="fas fa-cloud-upload-alt" style="font-size:3rem;color:var(--muted)"></i>
+<p>Click to upload or drag and drop</p>
+<small style="color:var(--muted)">PDF, DOC, DOCX, ZIP, RAR, Images (Max 50MB)</small>
+</div>
+<input type="file" id="fileInput" style="display:none" accept=".pdf,.doc,.docx,.zip,.rar,.jpg,.jpeg,.png,.gif,.txt,.md" onchange="handleFileSelect(this)">
+<div id="filePreview" style="margin-top:15px;display:none">
+<div class="alert alert-success">
+<i class="fas fa-file"></i>
+<strong id="fileName"></strong>
+<small style="display:block;margin-top:5px" id="fileSize"></small>
+<button type="button" class="btn btn-sm btn-danger" onclick="removeFile()" style="margin-left:10px"><i class="fas fa-times"></i> Remove</button>
+</div>
+</div>
+</div>
+</div>
+
+<!-- Text Submission Section -->
+<div class="card">
+<div class="card-header"><i class="fas fa-edit"></i> Text Submission</div>
+<form onsubmit="submitTask(event)">
+<div class="form-group"><label>Description / Report</label><textarea class="form-control" id="subDesc" rows="4" placeholder="Write your submission description here..."></textarea></div>
+<div class="form-group"><label>Project Link (Optional)</label><input type="url" class="form-control" id="subLink" placeholder="https://github.com/... or Google Drive link"></div>
+<div style="display:flex;gap:10px">
+<button type="submit" class="btn btn-primary"><i class="fas fa-paper-plane"></i> Submit</button>
+<button type="button" class="btn btn-outline" onclick="window.history.back()"><i class="fas fa-arrow-left"></i> Back</button>
+</div>
+</form>
+</div>
+</main>
+<script src="/js/app.js"></script>
+<script>
+requireAuth(); requireRole("student");
+const s = Session.get();
+$("#userName").textContent = s.name;
+
+const params = new URLSearchParams(window.location.search);
+const taskId = params.get("id");
+let selectedFile = null;
+
+(async function loadTask() {
+  if (!taskId) { window.location.href = "/pages/student/my-tasks.html"; return; }
+  const tasks = await apiFetch("/tasks");
+  if (!tasks) return;
+  const task = tasks.find(t => t.id == taskId);
+  if (!task) { window.location.href = "/pages/student/my-tasks.html"; return; }
+  $("#taskInfo").innerHTML = "<strong>" + escapeHtml(task.title) + "</strong><br>" + escapeHtml(task.description) + " | Course: " + escapeHtml(task.course_code) + " | Weight: " + (task.weight_percent || 0) + "%";
+})();
+
+function handleFileSelect(input) {
+  const file = input.files[0];
+  if (!file) return;
+  
+  if (file.size > 50 * 1024 * 1024) {
+    showNotif("File size must be less than 50MB", "danger");
+    input.value = "";
+    return;
+  }
+  
+  selectedFile = file;
+  $("#fileName").textContent = file.name;
+  $("#fileSize").textContent = formatFileSize(file.size);
+  $("#filePreview").style.display = "block";
+  $("#uploadArea").style.display = "none";
+}
+
+function removeFile() {
+  selectedFile = null;
+  $("#fileInput").value = "";
+  $("#filePreview").style.display = "none";
+  $("#uploadArea").style.display = "block";
+}
+
+function formatFileSize(bytes) {
+  if (bytes === 0) return "0 Bytes";
+  const k = 1024;
+  const sizes = ["Bytes", "KB", "MB", "GB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
+}
+
+// Drag and drop
+const uploadArea = document.getElementById('uploadArea');
+uploadArea.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  uploadArea.style.background = "var(--bg)";
+  uploadArea.style.borderColor = "var(--primary)";
+});
+uploadArea.addEventListener('dragleave', () => {
+  uploadArea.style.background = "";
+  uploadArea.style.borderColor = "";
+});
+uploadArea.addEventListener('drop', (e) => {
+  e.preventDefault();
+  uploadArea.style.background = "";
+  uploadArea.style.borderColor = "";
+  const files = e.dataTransfer.files;
+  if (files.length > 0) {
+    document.getElementById('fileInput').files = files;
+    handleFileSelect(document.getElementById('fileInput'));
+  }
+});
+
+async function submitTask(e) {
+  e.preventDefault();
+  const desc = $("#subDesc").value.trim();
+  const link = $("#subLink").value.trim();
+  
+  const formData = new FormData();
+  formData.append('description', desc);
+  if (link) formData.append('link_url', link);
+  if (selectedFile) formData.append('file', selectedFile);
+  
+  try {
+    const response = await fetch(API + '/submissions/upload', {
+      method: 'POST',
+      credentials: 'include',
+      body: formData
+    });
+    const result = await response.json();
+    
+    if (result.id) {
+      showNotif("Submission successful!", "success");
+      setTimeout(() => window.location.href = "/pages/student/my-submissions.html", 1000);
+    } else {
+      showNotif(result.error || "Failed to submit", "danger");
+    }
+  } catch (err) {
+    showNotif("Network error. Please try again.", "danger");
+  }
+}
+</script>
+</body>
+</html>

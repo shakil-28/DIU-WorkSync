@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>My Tasks</title>
+<link rel="stylesheet" href="/css/style.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+</head>
+<body>
+<div class="app-layout">
+<header class="topbar">
+<div class="topbar-left"><button class="hamburger" id="hamburgerBtn"><i class="fas fa-bars"></i></button><a href="../../index.html" class="logo">DIU WorkSync</a></div>
+<div class="topbar-right">
+<button class="theme-toggle" id="themeToggle"><i class="fas fa-moon"></i></button>
+<div class="user-info"><i class="fas fa-user-circle"></i><span id="userName"></span><span id="roleBadge" class="role-badge role-student">Student</span></div>
+<button class="logout-btn" onclick="Session.logout()"><i class="fas fa-sign-out-alt"></i></button>
+</div>
+</header>
+<div class="sidebar-overlay" id="sidebarOverlay"></div>
+<aside class="sidebar" id="sidebar">
+<nav class="sidebar-nav">
+<div class="nav-section">Main</div>
+<a href="dashboard.html" class="nav-link"><i class="fas fa-tachometer-alt"></i> Dashboard</a>
+<a href="my-courses.html" class="nav-link"><i class="fas fa-book"></i> My Courses</a>
+<a href="my-tasks.html" class="nav-link active"><i class="fas fa-tasks"></i> My Tasks</a>
+<a href="my-projects.html" class="nav-link"><i class="fas fa-project-diagram"></i> My Projects</a>
+<div class="nav-section">More</div>
+<a href="my-submissions.html" class="nav-link"><i class="fas fa-file-upload"></i> Submissions</a>
+<a href="contribution-report.html" class="nav-link"><i class="fas fa-chart-pie"></i> My Contribution</a>
+<a href="activity.html" class="nav-link"><i class="fas fa-history"></i> Activity</a>
+<a href="profile.html" class="nav-link"><i class="fas fa-user"></i> Profile</a>
+<div class="nav-divider"></div>
+<a href="#" class="nav-link logout" onclick="Session.logout()"><i class="fas fa-sign-out-alt"></i> Logout</a>
+</nav>
+</aside>
+<main class="main-content">
+<div class="card">
+<div class="card-header">
+<span><i class="fas fa-tasks"></i> My Tasks</span>
+<div style="display:flex;gap:10px;flex-wrap:wrap">
+<div class="search-icon" style="flex:1;min-width:150px">
+<i class="fas fa-search"></i>
+<input type="text" class="search-input" id="taskSearch" placeholder="Search..." oninput="applyTaskFilters()" style="padding-left:32px;width:100%">
+</div>
+<select class="form-control" style="width:auto" id="filterPriority" onchange="applyTaskFilters()">
+<option value="">All Priorities</option>
+<option value="High">High</option>
+<option value="Medium">Medium</option>
+<option value="Low">Low</option>
+</select>
+<select class="form-control" style="width:auto" id="filterStatus" onchange="applyTaskFilters()">
+<option value="">All Status</option>
+<option value="Not Started">Not Started</option>
+<option value="In Progress">In Progress</option>
+<option value="Completed">Completed</option>
+<option value="Overdue">Overdue</option>
+</select>
+</div>
+</div>
+<div id="taskResultsCount" class="results-count"></div>
+<div class="table-responsive">
+<table>
+<tr><th>Title</th><th>Type</th><th>Course</th><th>Project</th><th>Weight</th><th>Deadline</th><th>Status</th><th>Action</th></tr>
+<tbody id="taskTable"></tbody>
+</table>
+</div>
+</div>
+<div id="taskPagination"></div>
+</main>
+<script src="/js/app.js"></script>
+<script>
+requireAuth(); requireRole("student");
+const s = Session.get();
+$("#userName").textContent = s.name;
+
+let allTasks = [];
+let taskPage = 1;
+const TASKS_PER_PAGE = 8;
+
+(async function loadTasks() {
+  allTasks = await apiFetch("/tasks");
+  if (!allTasks) return;
+  applyTaskFilters();
+})();
+
+function applyTaskFilters() {
+  const query = ($("#taskSearch").value || "").trim();
+  const priority = $("#filterPriority").value;
+  const status = $("#filterStatus").value;
+  const result = applyFilters(allTasks, query, { status, priority }, taskPage, TASKS_PER_PAGE);
+  renderTasks(result.items, result);
+}
+
+function renderTasks(tasks, pagInfo) {
+  const tbody = $("#taskTable");
+  const countEl = $("#taskResultsCount");
+  const pageEl = $("#taskPagination");
+  if (countEl) countEl.textContent = pagInfo ? (pagInfo.total === allTasks.length ? "Showing all " + pagInfo.total + " tasks" : "Showing " + pagInfo.items.length + " of " + pagInfo.total + " tasks") : "";
+  if (tasks.length) {
+    tbody.innerHTML = tasks.map(t =>
+      "<tr class='priority-row-" + (t.priority||"medium").toLowerCase() + "'>" +
+        "<td><strong>" + escapeHtml(t.title) + "</strong></td" +
+        "<td>" + escapeHtml(t.type || "-") + "</td>" +
+        "<td>" + escapeHtml(t.course_code) + "</td>" +
+        "<td>" + escapeHtml(t.project_name || "-") + "</td>" +
+        "<td><strong>" + (t.weight_percent || 0) + "%</strong></td" +
+        "<td>" + formatDate(t.deadline) + "</td>" +
+        "<td><span class='badge " + getStatusClass(t.status) + "'>" + t.status + "</span></td" +
+        "<td>" + (t.status !== "Completed" ? "<a href='/pages/student/submit-task.html?id=" + t.id + "' class='btn btn-sm btn-primary'>Submit</a>" : "<span style='color:var(--secondary)'><i class='fas fa-check'></i> Done</span>") + "</td>" +
+      "</tr>"
+    ).join("");
+  } else {
+    tbody.innerHTML = "<tr><td colspan='8'><div class='empty-state'><i class='fas fa-tasks'></i><p>No tasks found</p></div></td></tr>";
+  }
+  if (pageEl) pageEl.innerHTML = renderPagination(pagInfo?.page || 1, pagInfo?.totalPages || 1, "function(p){taskPage=getPagination(p,"+pagInfo?.totalPages+"||1,"+TASKS_PER_PAGE+");applyTaskFilters();}");
+}
+</script>
+
+<script>
+// Mobile table converter - transforms tables to card layout on small screens
+function makeTablesMobileResponsive(){
+  const isMobile=window.innerWidth<=640;
+  document.querySelectorAll('table').forEach(table=>{
+    const wrapper=table.parentElement;
+    if(!wrapper.classList.contains('table-responsive'))return;
+    if(isMobile){
+      if(!table.classList.contains('mobile-converted')){
+        table.querySelectorAll('tr').forEach(tr=>{
+          tr.querySelectorAll('td').forEach((td,i)=>{
+            const th=table.querySelector('thead th:nth-child('+(i+1)+')');
+            const label=th?th.textContent.trim():'Cell '+(i+1);
+            td.setAttribute('data-label',label);
+          });
+        });
+        table.classList.add('mobile-converted');
+      }
+    }else{
+      table.querySelectorAll('[data-label]').forEach(td=>td.removeAttribute('data-label'));
+      table.classList.remove('mobile-converted');
+    }
+  });
+}
+window.addEventListener('load',makeTablesMobileResponsive);
+window.addEventListener('resize',()=>{clearTimeout(window._tblTimeout);window._tblTimeout=setTimeout(makeTablesMobileResponsive,150)});
+</script>
+
+<script>
+(function(){
+  function convertTables(){
+    var isMobile=window.innerWidth<=640;
+    document.querySelectorAll('table').forEach(function(table){
+      var wrapper=table.parentElement;
+      if(!wrapper||!wrapper.classList.contains('table-responsive'))return;
+      table.querySelectorAll('tr').forEach(function(tr){
+        tr.querySelectorAll('td').forEach(function(td,i){
+          var th=table.querySelector('thead th:nth-child('+(i+1)+')');
+          var label=th?th.textContent.trim():'Cell '+(i+1);
+          if(isMobile){td.setAttribute('data-label',label)}
+          else{td.removeAttribute('data-label')}
+        });
+      });
+    });
+  }
+  convertTables();
+  window.addEventListener('resize',function(){clearTimeout(window._rt);window._rt=setTimeout(convertTables,200)});
+})();
+</script>
+</body>
+</html>

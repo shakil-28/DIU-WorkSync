@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Teacher Dashboard - DIU WorkSync</title>
+<link rel="stylesheet" href="/css/style.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+.chart-grid { display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-top:20px; }
+.chart-card { background:var(--card); border-radius:12px; padding:20px; border:1px solid var(--border); }
+.chart-card h3 { margin:0 0 16px 0; font-size:15px; display:flex; align-items:center; gap:8px; }
+.progress-row { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+.progress-label { width:120px; font-size:13px; font-weight:500; }
+.progress-bar-bg { flex:1; height:10px; background:var(--border); border-radius:5px; overflow:hidden; }
+.progress-bar-fill { height:100%; border-radius:5px; transition:width 0.6s ease; }
+.progress-pct { width:40px; font-size:12px; text-align:right; font-weight:600; }
+canvas { max-height:280px; }
+</style>
+</head>
+<body>
+<div class="app-layout">
+<header class="topbar">
+<div class="topbar-left">
+<button class="hamburger" id="hamburgerBtn"><i class="fas fa-bars"></i></button>
+<a href="../../index.html" class="logo">DIU WorkSync</a>
+</div>
+<div class="topbar-right">
+<button class="theme-toggle" id="themeToggle"><i class="fas fa-moon"></i></button>
+<div class="user-info"><i class="fas fa-user-circle"></i><span id="userName"></span><span id="roleBadge" class="role-badge role-teacher">Teacher</span></div>
+<button class="logout-btn" onclick="Session.logout()"><i class="fas fa-sign-out-alt"></i></button>
+</div>
+</header>
+<div class="sidebar-overlay" id="sidebarOverlay"></div>
+<aside class="sidebar" id="sidebar">
+<nav class="sidebar-nav">
+<div class="nav-section">Main</div>
+<a href="dashboard.html" class="nav-link active"><i class="fas fa-tachometer-alt"></i> Dashboard</a>
+<a href="courses.html" class="nav-link"><i class="fas fa-book"></i> Courses</a>
+<a href="projects.html" class="nav-link"><i class="fas fa-project-diagram"></i> Projects</a>
+<a href="tasks.html" class="nav-link"><i class="fas fa-tasks"></i> Tasks</a>
+<div class="nav-section">Management</div>
+<a href="submissions.html" class="nav-link"><i class="fas fa-file-upload"></i> Submissions</a>
+<a href="reports.html" class="nav-link"><i class="fas fa-chart-bar"></i> Reports</a>
+<a href="announcements.html" class="nav-link"><i class="fas fa-bullhorn"></i> Announcements</a>
+<div class="nav-divider"></div>
+<a href="activity.html" class="nav-link"><i class="fas fa-history"></i> Activity Log</a>
+<a href="profile.html" class="nav-link"><i class="fas fa-user"></i> Profile</a>
+<div class="nav-divider"></div>
+<a href="#" class="nav-link logout" onclick="Session.logout()"><i class="fas fa-sign-out-alt"></i> Logout</a>
+</nav>
+</aside>
+<main class="main-content">
+<div class="welcome-banner"><h2>Welcome, <span id="welcomeName"></span>!</h2><p>Monitor your courses, projects, and student contributions.</p></div>
+
+<div class="stats-grid">
+<div class="stat-card"><div class="stat-value" id="statCourses">0</div><div class="stat-label">Courses</div></div>
+<div class="stat-card green"><div class="stat-value" id="statProjects">0</div><div class="stat-label">Active Projects</div></div>
+<div class="stat-card orange"><div class="stat-value" id="statTasks">0</div><div class="stat-label">Total Tasks</div></div>
+<div class="stat-card red"><div class="stat-value" id="statOverdue">0</div><div class="stat-label">Overdue</div></div>
+</div>
+
+<div class="today-widget">
+  <div style="display:flex;justify-content:space-between;align-items:center">
+    <div><h3 style="margin:0;font-size:1.1rem"><i class="fas fa-calendar-day"></i> Today's Tasks</h3><div class="task-count" id="todayCount">0</div></div>
+    <button class="btn btn-sm" style="background:rgba(255,255,255,0.2);color:#fff" onclick="checkOverdue()"><i class="fas fa-sync"></i> Check Now</button>
+  </div>
+  <div id="todayList" style="margin-top:15px"><li style='opacity:0.8'><i class='fas fa-check-circle'></i> No tasks due today</li></div>
+</div>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:20px" class="chart-grid">
+<div class="chart-card"><h3><i class="fas fa-chart-bar"></i> Tasks by Course</h3><canvas id="barChart"></canvas></div>
+<div class="chart-card"><h3><i class="fas fa-chart-pie"></i> Task Status</h3><canvas id="pieChart"></canvas></div>
+</div>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:20px" class="chart-grid">
+<div class="chart-card"><h3><i class="fas fa-chart-donut"></i> Project Status</h3><canvas id="donutChart"></canvas></div>
+<div class="chart-card"><h3><i class="fas fa-tasks"></i> Course Progress</h3><div id="progressBars"></div></div>
+</div>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:20px">
+<div class="card"><div class="card-header"><i class="fas fa-exclamation-triangle"></i> Overdue Tasks <a href="tasks.html" style="margin-left:auto;font-size:12px;color:var(--primary)">View All</a></div><div id="overdueList"><div class="empty-state"><i class="fas fa-check-circle"></i><p>No overdue tasks</p></div></div></div>
+<div class="card"><div class="card-header"><i class="fas fa-calendar-alt"></i> Upcoming Deadlines <button class="btn btn-sm btn-primary" onclick="checkOverdue()" style="margin-left:auto"><i class="fas fa-sync"></i> Check Now</button></div><div id="upcomingList"><div class="empty-state"><i class="fas fa-clock"></i><p>Loading...</p></div></div></div>
+</div>
+
+<div class="card"><div class="card-header"><i class="fas fa-history"></i> Recent Activity <a href="activity.html" style="margin-left:auto;font-size:12px;color:var(--primary)">View All</a></div><div id="activityList"><div class="empty-state"><i class="fas fa-inbox"></i><p>No recent activity</p></div></div></div>
+</main>
+<footer class="main-footer">&copy; 2026 DIU WorkSync</footer>
+</div>
+
+<script src="/js/app.js"></script>
+<script>
+requireAuth(); requireRole("teacher");
+const s = Session.get();
+$("#userName").textContent = s.name;
+$("#welcomeName").textContent = s.name;
+
+(async function loadDashboard() {
+  const [courses, projects, tasks, activities] = await Promise.all([
+    apiFetch("/courses"),
+    apiFetch("/projects"),
+    apiFetch("/tasks"),
+    apiFetch("/activities"),
+  ]);
+  
+  const today = new Date().toISOString().split("T")[0];
+  const todayTasks = tasks?.filter(t => t.deadline === today) || [];
+  $("#todayCount").textContent = todayTasks.length;
+  
+  if (todayTasks.length) {
+    $("#todayList").innerHTML = "<ul class='task-list'>" + todayTasks.slice(0,5).map(t => 
+      "<li><div class='task-info'><strong>" + escapeHtml(t.title) + "</strong><br><small>" + escapeHtml(t.course_code) + " | " + t.type + "</small></div></li>"
+    ).join("") + "</ul>";
+  } else {
+    $("#todayList").innerHTML = "<div style='padding:20px;text-align:center;color:var(--muted)'><i class='fas fa-check-circle' style='font-size:24px;margin-bottom:8px;display:block'></i>No tasks due today</div>";
+  }
+  
+  if (!courses) return;
+  $("#statCourses").textContent = courses.length;
+  $("#statProjects").textContent = projects?.filter(p => p.status === "Active").length || 0;
+  $("#statTasks").textContent = tasks?.length || 0;
+  $("#statOverdue").textContent = tasks?.filter(t => t.status === "Overdue").length || 0;
+
+  const overdue = tasks?.filter(t => t.status === "Overdue") || [];
+  if (overdue.length) {
+    $("#overdueList").innerHTML = "<ul class='task-list'>" + overdue.slice(0,5).map(t =>
+      "<li><div class='task-info'><strong>" + escapeHtml(t.title) + "</strong><small>" + escapeHtml(t.course_code) + " | Due: " + formatDate(t.deadline) + "</small></div><span class='badge badge-overdue'>Overdue</span></li>"
+    ).join("") + "</ul>";
+  }
+
+  const upcoming = await apiFetch("/deadlines/upcoming");
+  if (upcoming?.length) {
+    $("#upcomingList").innerHTML = "<ul class='task-list'>" + upcoming.slice(0, 5).map(d => {
+      const daysLeft = Math.ceil((new Date(d.deadline) - new Date()) / (1000 * 60 * 60 * 24));
+      const tag = daysLeft < 0 ? '<span class="badge badge-overdue">Overdue</span>' :
+                  daysLeft === 0 ? '<span class="badge badge-warning">Today</span>' :
+                  '<span class="badge badge-info">' + daysLeft + 'd</span>';
+      return "<li><div class='task-info'><strong>" + escapeHtml(d.title) + "</strong><br><small>" + escapeHtml(d.course_code) + " | " + d.priority + "</small></div>" + tag + "<span class='countdown' data-deadline='" + d.deadline + "'></span></li>";
+    }).join("") + "</ul>";
+    startCountdowns();
+  } else {
+    $("#upcomingList").innerHTML = "<div style='padding:20px;text-align:center;color:var(--muted)'><i class='fas fa-check-circle' style='font-size:24px;margin-bottom:8px;display:block'></i>No upcoming deadlines</div>";
+  }
+
+  const acts = (activities || []).slice(0, 5).reverse();
+  if (acts.length) {
+    $("#activityList").innerHTML = acts.map(a =>
+      "<ul class='task-list'><li><span>" + escapeHtml(a.action) + "</span><small class='text-muted'>" + formatDateTime(a.logged_at) + "</small></li></ul>"
+    ).join("");
+  }
+
+  renderCharts(courses, tasks, projects);
+  loadNotifBadge();
+})();
+
+async function loadNotifBadge() {
+  const data = await apiFetch("/notifications");
+  const badge = $("#annBadge");
+  if (!badge) return;
+  const unread = data?.unread || 0;
+  if (unread > 0) {
+    badge.textContent = unread > 9 ? "9+" : unread;
+    badge.style.display = "flex";
+  } else {
+    badge.style.display = "none";
+  }
+}
+
+function renderCharts(courses, tasks, projects) {
+  const colors = ['#4f46e5', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899'];
+  const textColor = getComputedStyle(document.body).getPropertyValue('--text').trim() || '#333';
+
+  // 1. Bar Chart - Tasks per Course
+  const courseTaskCount = {};
+  (tasks || []).forEach(t => { courseTaskCount[t.course_code || 'Uncategorized'] = (courseTaskCount[t.course_code || 'Uncategorized'] || 0) + 1; });
+  new Chart(document.getElementById('barChart'), {
+    type: 'bar',
+    data: {
+      labels: Object.keys(courseTaskCount),
+      datasets: [{ label: 'Tasks', data: Object.values(courseTaskCount), backgroundColor: colors.slice(0, Object.keys(courseTaskCount).length), borderRadius: 6 }]
+    },
+    options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { color: textColor, precision: 0 } }, x: { ticks: { color: textColor } } } }
+  });
+
+  // 2. Pie Chart - Task Status
+  const statusCounts = { 'Not Started': 0, 'In Progress': 0, 'Completed': 0, 'Overdue': 0 };
+  (tasks || []).forEach(t => { if (statusCounts[t.status] !== undefined) statusCounts[t.status]++; });
+  new Chart(document.getElementById('pieChart'), {
+    type: 'pie',
+    data: {
+      labels: Object.keys(statusCounts),
+      datasets: [{ data: Object.values(statusCounts), backgroundColor: ['#6c757d', '#007bff', '#28a745', '#dc3545'], borderWidth: 2, borderColor: '#fff' }]
+    },
+    options: { responsive: true, plugins: { legend: { position: 'bottom', labels: { color: textColor, padding: 12 } } } }
+  });
+
+  // 3. Donut Chart - Project Status
+  const projStatus = { 'Not Started': 0, 'Active': 0, 'Completed': 0 };
+  (projects || []).forEach(p => { if (projStatus[p.status] !== undefined) projStatus[p.status]++; });
+  new Chart(document.getElementById('donutChart'), {
+    type: 'doughnut',
+    data: {
+      labels: Object.keys(projStatus),
+      datasets: [{ data: Object.values(projStatus), backgroundColor: ['#6c757d', '#10b981', '#3b82f6'], borderWidth: 2, borderColor: '#fff' }]
+    },
+    options: { responsive: true, cutout: '65%', plugins: { legend: { position: 'bottom', labels: { color: textColor, padding: 12 } } } }
+  });
+
+  // 4. Progress Bars - Completion by Course
+  const progHtml = (courses || []).slice(0, 6).map(c => {
+    const courseTasks = (tasks || []).filter(t => t.course_code === c.course_code);
+    const done = courseTasks.filter(t => t.status === 'Completed').length;
+    const total = courseTasks.length || 1;
+    const pct = Math.round(done / total * 100);
+    const color = pct >= 80 ? '#10b981' : pct >= 50 ? '#f59e0b' : '#ef4444';
+    return "<div class='progress-row'>" +
+      "<span class='progress-label'>" + escapeHtml(c.course_code) + "</span>" +
+      "<div class='progress-bar-bg'><div class='progress-bar-fill' style='width:" + pct + "%;background:" + color + "'></div></div>" +
+      "<span class='progress-pct' style='color:" + color + "'>" + pct + "%</span>" +
+    "</div>";
+  }).join("");
+  $("#progressBars").innerHTML = progHtml || "<p class='text-muted'>No courses with tasks yet</p>";
+}
+
+function checkOverdue() {
+  fetch("/api/deadlines/check", { method: "POST", headers: { "Content-Type": "application/json" } })
+    .then(r => r.json())
+    .then(data => {
+      alert("Checked: " + data.tasksOverdue + " tasks and " + data.assignsOverdue + " assignments marked overdue");
+      location.reload();
+    })
+    .catch(() => alert("Failed to check deadlines"));
+}
+
+function startCountdowns() {
+  function update() {
+    document.querySelectorAll(".countdown").forEach(el => {
+      const deadline = new Date(el.dataset.deadline);
+      const now = new Date();
+      const diff = deadline - now;
+      if (diff <= 0) { el.textContent = ""; return; }
+      const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+      const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+      const mins = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+      el.textContent = " " + days + "d " + hours + "h " + mins + "m";
+    });
+  }
+  update();
+  setInterval(update, 60000);
+}
+</script>
+</body>
+</html>

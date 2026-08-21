@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Activity Log - Teacher</title>
+<link rel="stylesheet" href="/css/style.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+<style>
+.activity-item { padding:14px 0; border-bottom:1px solid var(--border); display:flex; gap:14px; align-items:flex-start; }
+.activity-item:last-child { border-bottom:none; }
+.activity-icon { width:36px; height:36px; border-radius:50%; display:flex; align-items:center; justify-content:center; flex-shrink:0; font-size:14px; }
+.activity-icon.login { background:#e3f2fd; color:#1976d2; }
+.activity-icon.task { background:#f3e5f5; color:#7b1fa2; }
+.activity-icon.project { background:#e8f5e9; color:#388e3c; }
+.activity-icon.review { background:#fff3e0; color:#f57c00; }
+.activity-icon.course { background:#fce4ec; color:#c2185b; }
+.activity-icon.default { background:#f5f5f5; color:#616161; }
+.activity-body { flex:1; }
+.activity-action { font-size:14px; color:var(--text); }
+.activity-action strong { color:var(--primary); }
+.activity-meta { font-size:12px; color:var(--muted); margin-top:4px; }
+.filter-bar { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px; }
+.filter-btn { padding:6px 14px; border-radius:20px; border:1px solid var(--border); background:var(--bg); color:var(--text); cursor:pointer; font-size:13px; }
+.filter-btn.active { background:var(--primary); color:#fff; border-color:var(--primary); }
+</style>
+</head>
+<body>
+<div class="app-layout">
+<header class="topbar">
+<div class="topbar-left"><button class="hamburger" id="hamburgerBtn"><i class="fas fa-bars"></i></button><a href="../../index.html" class="logo">DIU WorkSync</a></div>
+<div class="topbar-right">
+<button class="theme-toggle" id="themeToggle"><i class="fas fa-moon"></i></button>
+<div class="user-info"><i class="fas fa-user-circle"></i><span id="userName"></span><span id="roleBadge" class="role-badge role-teacher">Teacher</span></div>
+<button class="logout-btn" onclick="Session.logout()"><i class="fas fa-sign-out-alt"></i></button>
+</div>
+</header>
+<div class="sidebar-overlay" id="sidebarOverlay"></div>
+<aside class="sidebar" id="sidebar">
+<nav class="sidebar-nav">
+<div class="nav-section">Main</div>
+<a href="dashboard.html" class="nav-link"><i class="fas fa-tachometer-alt"></i> Dashboard</a>
+<a href="courses.html" class="nav-link"><i class="fas fa-book"></i> Courses</a>
+<a href="projects.html" class="nav-link"><i class="fas fa-project-diagram"></i> Projects</a>
+<a href="tasks.html" class="nav-link"><i class="fas fa-tasks"></i> Tasks</a>
+<div class="nav-section">Management</div>
+<a href="submissions.html" class="nav-link"><i class="fas fa-file-upload"></i> Submissions</a>
+<a href="reports.html" class="nav-link"><i class="fas fa-chart-bar"></i> Reports</a>
+<a href="announcements.html" class="nav-link"><i class="fas fa-bullhorn"></i> Announcements</a>
+<div class="nav-divider"></div>
+<a href="activity.html" class="nav-link active"><i class="fas fa-history"></i> Activity Log</a>
+<a href="#" class="nav-link logout" onclick="Session.logout()"><i class="fas fa-sign-out-alt"></i> Logout</a>
+</nav>
+</aside>
+<main class="main-content">
+<div class="card">
+<div class="card-header">Activity Log</div>
+<div class="filter-bar">
+<button class="filter-btn active" data-filter="all">All</button>
+<button class="filter-btn" data-filter="login">Logins</button>
+<button class="filter-btn" data-filter="task">Tasks</button>
+<button class="filter-btn" data-filter="project">Projects</button>
+<button class="filter-btn" data-filter="review">Reviews</button>
+<button class="filter-btn" data-filter="course">Courses</button>
+</div>
+<div id="activityList"></div>
+</div>
+</main>
+<footer class="main-footer">&copy; 2026 DIU WorkSync</footer>
+</div>
+<script src="/js/app.js"></script>
+<script>
+requireAuth(); requireRole("teacher");
+const s = Session.get();
+$("#userName").textContent = s.name;
+
+let currentFilter = "all";
+
+document.querySelectorAll(".filter-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".filter-btn").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    currentFilter = btn.dataset.filter;
+    renderActivities(activities);
+  });
+});
+
+let activities = [];
+
+async function loadActivities() {
+  activities = await apiFetch("/activities");
+  if (!activities) return;
+  renderActivities(activities);
+}
+
+function getIconClass(action) {
+  action = (action || "").toLowerCase();
+  if (action.includes("logged in") || action.includes("login")) return "login";
+  if (action.includes("task")) return "task";
+  if (action.includes("project")) return "project";
+  if (action.includes("review")) return "review";
+  if (action.includes("course")) return "course";
+  return "default";
+}
+
+function getIconSymbol(cls) {
+  const map = { login:"fa-sign-in-alt", task:"fa-tasks", project:"fa-project-diagram", review:"fa-check-circle", course:"fa-book", default:"fa-circle" };
+  return "fas " + (map[cls] || map.default);
+}
+
+function matchesFilter(action, filter) {
+  if (filter === "all") return true;
+  action = (action || "").toLowerCase();
+  if (filter === "login") return action.includes("login");
+  if (filter === "task") return action.includes("task");
+  if (filter === "project") return action.includes("project");
+  if (filter === "review") return action.includes("review");
+  if (filter === "course") return action.includes("course");
+  return true;
+}
+
+function renderActivities(list) {
+  const el = $("#activityList");
+  const filtered = currentFilter === "all" ? list : list.filter(a => matchesFilter(a.action, currentFilter));
+  if (filtered.length) {
+    el.innerHTML = filtered.map(a => {
+      const cls = getIconClass(a.action);
+      const name = a.user_name || "Unknown";
+      const role = a.user_role === "teacher" ? "Teacher" : "Student";
+      return "<div class='activity-item'>" +
+        "<div class='activity-icon " + cls + "'><i class='" + getIconSymbol(cls) + "'></i></div>" +
+        "<div class='activity-body'>" +
+          "<div class='activity-action'><strong>" + escapeHtml(name) + "</strong> (" + role + "): " + escapeHtml(a.action) + "</div>" +
+          "<div class='activity-meta'><i class='far fa-clock'></i> " + formatDateTime(a.logged_at) + "</div>" +
+        "</div>" +
+      "</div>";
+    }).join("");
+  } else {
+    el.innerHTML = "<div class='empty-state'><i class='fas fa-history'></i><p>No activity found</p></div>";
+  }
+}
+
+loadActivities();
+</script>
+</body>
+</html>

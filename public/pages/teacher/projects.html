@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Projects</title>
+<link rel="stylesheet" href="/css/style.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+</head>
+<body>
+<div class="app-layout">
+<header class="topbar">
+<div class="topbar-left"><button class="hamburger" id="hamburgerBtn"><i class="fas fa-bars"></i></button><a href="../../index.html" class="logo">DIU WorkSync</a></div>
+<div class="topbar-right">
+<button class="theme-toggle" id="themeToggle"><i class="fas fa-moon"></i></button>
+<div class="user-info"><i class="fas fa-user-circle"></i><span id="userName"></span><span id="roleBadge" class="role-badge role-teacher">Teacher</span></div>
+<button class="logout-btn" onclick="Session.logout()"><i class="fas fa-sign-out-alt"></i></button>
+</div>
+</header>
+<div class="sidebar-overlay" id="sidebarOverlay"></div>
+<aside class="sidebar" id="sidebar">
+<nav class="sidebar-nav">
+<div class="nav-section">Main</div>
+<a href="dashboard.html" class="nav-link"><i class="fas fa-tachometer-alt"></i> Dashboard</a>
+<a href="courses.html" class="nav-link"><i class="fas fa-book"></i> Courses</a>
+<a href="projects.html" class="nav-link active"><i class="fas fa-project-diagram"></i> Projects</a>
+<a href="tasks.html" class="nav-link"><i class="fas fa-tasks"></i> Tasks</a>
+<div class="nav-section">Management</div>
+<a href="submissions.html" class="nav-link"><i class="fas fa-file-upload"></i> Submissions</a>
+<a href="reports.html" class="nav-link"><i class="fas fa-chart-bar"></i> Reports</a>
+<a href="announcements.html" class="nav-link"><i class="fas fa-bullhorn"></i> Announcements</a>
+<a href="peer-reviews.html" class="nav-link"><i class="fas fa-users"></i> Peer Reviews</a>
+<a href="project-discussion.html" class="nav-link"><i class="fas fa-comments"></i> Discussions</a>
+<div class="nav-divider"></div>
+<a href="#" class="nav-link logout" onclick="Session.logout()"><i class="fas fa-sign-out-alt"></i> Logout</a>
+</nav>
+</aside>
+<main class="main-content">
+<div class="card">
+<div class="card-header">Create Group Project</div>
+<form onsubmit="createProject(event)">
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:15px">
+<div class="form-group"><label>Course</label><select class="form-control" id="projCourse" required></select></div>
+<div class="form-group"><label>Group Name</label><input type="text" class="form-control" id="projGroup" placeholder="Group 03" required></div>
+<div class="form-group" style="grid-column:1/-1"><label>Project Title</label><input type="text" class="form-control" id="projTitle" required></div>
+<div class="form-group" style="grid-column:1/-1"><label>Description</label><textarea class="form-control" id="projDesc" rows="3"></textarea></div>
+</div>
+<button type="submit" class="btn btn-primary"><i class="fas fa-plus"></i> Create Project</button>
+</form>
+</div>
+<div class="card">
+<div class="card-header">My Projects</div>
+<div class="search-bar">
+  <div class="search-icon" style="flex:1">
+    <i class="fas fa-search"></i>
+    <input type="text" class="search-input" id="projSearch" placeholder="Search projects..." oninput="applyProjFilters()">
+  </div>
+  <select class="form-control" style="width:auto" id="projFilterStatus" onchange="applyProjFilters()">
+    <option value="">All Status</option>
+    <option value="Active">Active</option>
+    <option value="Completed">Completed</option>
+    <option value="Archived">Archived</option>
+  </select>
+</div>
+<div id="projResultsCount" class="results-count"></div>
+<div class="table-responsive">
+<table>
+<tr><th>Project</th><th>Course</th><th>Group</th><th>Members</th><th>Status</th><th>Created</th><th>Actions</th></tr>
+<tbody id="projTable"></tbody>
+</table>
+</div>
+<div id="projPagination"></div>
+</div>
+</main>
+
+<!-- Add Members Modal -->
+<div id="memberModal" class="modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:2000;align-items:center;justify-content:center">
+<div class="card" style="max-width:500px;width:90%">
+<div class="card-header">
+<span><i class="fas fa-users"></i> Add Members</span>
+<button onclick="closeMemberModal()" style="background:none;border:none;font-size:1.5rem;cursor:pointer;position:absolute;right:15px;top:15px">&times;</button>
+</div>
+<div class="form-group"><label>Search Student</label><input type="text" class="form-control" id="memberSearch" placeholder="Type name or email..." oninput="filterMembers()"></div>
+<div id="memberList" style="max-height:250px;overflow-y:auto;margin-bottom:15px"></div>
+<button class="btn btn-primary" onclick="saveMembers()" id="saveMemberBtn" disabled><i class="fas fa-save"></i> Save Members</button>
+</div>
+</div>
+
+<script src="/js/app.js"></script>
+<script>
+requireAuth(); requireRole("teacher");
+const s = Session.get();
+$("#userName").textContent = s.name;
+
+let courses = [];
+let allStudents = [];
+let currentProjectId = null;
+let selectedMembers = new Set();
+let leaderId = null;
+
+(async function init() {
+  [courses, allStudents] = await Promise.all([
+    apiFetch("/courses"),
+    apiFetch("/users")
+  ]);
+  if (!courses) return;
+  $("#projCourse").innerHTML = courses.map(c => "<option value='" + c.id + "'>" + escapeHtml(c.course_code) + " - " + escapeHtml(c.course_name) + "</option>").join("");
+  loadProjects();
+})();
+
+async function createProject(e) {
+  e.preventDefault();
+  const course_id = parseInt($("#projCourse").value);
+  const title = $("#projTitle").value.trim();
+  const desc = $("#projDesc").value.trim();
+  const group = $("#projGroup").value.trim();
+  const r = await apiFetch("/projects", { method: "POST", body: JSON.stringify({ title, description: desc, course_id, group_name: group }) });
+  if (r) {
+    showNotif("Project created!", "success");
+    $("#projTitle").value = ""; $("#projDesc").value = ""; $("#projGroup").value = "";
+    loadProjects();
+  }
+}
+
+async function loadProjects() {
+  const projects = await apiFetch("/projects");
+  if (!projects) return;
+  const tbody = $("#projTable");
+  if (projects.length) {
+    tbody.innerHTML = projects.map(p =>
+      "<tr>" +
+        "<td><strong>" + escapeHtml(p.title) + "</strong></td" +
+        "<td>" + escapeHtml(p.course_code) + "</td>" +
+        "<td>" + escapeHtml(p.group_name || "Group") + "</td>" +
+        "<td>" + (p.member_count || 0) + "</td>" +
+        "<td><span class='badge " + getStatusClass(p.status) + "'>" + p.status + "</span></td" +
+        "<td>" + formatDate(p.created_at) + "</td>" +
+        "<td><button class='btn btn-sm btn-primary' onclick='openMemberModal(" + p.id + ")'><i class='fas fa-users'></i> Add Members</button></td>" +
+      "</tr>"
+    ).join("");
+  } else {
+    tbody.innerHTML = "<tr><td colspan='7'><div class='empty-state'><i class='fas fa-project-diagram'></i><p>No projects yet</p></div></td></tr>";
+  }
+}
+
+function openMemberModal(projectId) {
+  currentProjectId = projectId;
+  selectedMembers.clear();
+  leaderId = null;
+  $("#memberSearch").value = "";
+  filterMembers();
+  $("#memberModal").style.display = "flex";
+}
+
+function closeMemberModal() {
+  $("#memberModal").style.display = "none";
+  currentProjectId = null;
+  selectedMembers.clear();
+  leaderId = null;
+}
+
+function filterMembers() {
+  const query = $("#memberSearch").value.toLowerCase();
+  const filtered = allStudents.filter(st => 
+    st.role === "student" && 
+    (st.name.toLowerCase().includes(query) || st.email.toLowerCase().includes(query))
+  );
+  
+  if (filtered.length) {
+    $("#memberList").innerHTML = filtered.map(st => `
+      <div style="padding:12px;border-bottom:1px solid var(--border);cursor:pointer;display:flex;align-items:center;gap:10px" 
+           onclick="toggleMember(${st.id}, this)" 
+           data-id="${st.id}">
+        <input type="checkbox" style="width:18px;height:18px;cursor:pointer" onclick="event.stopPropagation();toggleMember(${st.id}, this.parentElement)">
+        <div style="flex:1">
+          <strong>${escapeHtml(st.name)}</strong><br>
+          <small class="text-muted">${escapeHtml(st.email)}</small>
+        </div>
+        <select class="form-control" style="width:auto" onclick="event.stopPropagation()" onchange="setLeader(${st.id}, this.value)">
+          <option value="Member">Member</option>
+          <option value="Leader">Leader</option>
+        </select>
+      </div>
+    `).join("");
+  } else {
+    $("#memberList").innerHTML = "<div class='empty-state'><p>No students found</p></div>";
+  }
+}
+
+function toggleMember(studentId, el) {
+  const checkbox = el.querySelector("input[type='checkbox']");
+  checkbox.checked = !checkbox.checked;
+  
+  if (checkbox.checked) {
+    selectedMembers.add(studentId);
+    el.style.background = "var(--bg)";
+  } else {
+    selectedMembers.delete(studentId);
+    el.style.background = "";
+  }
+  
+  // Check if at least one member selected
+  $("#saveMemberBtn").disabled = selectedMembers.size === 0;
+}
+
+function setLeader(studentId, role) {
+  if (role === "Leader") {
+    leaderId = studentId;
+  } else if (leaderId === studentId) {
+    leaderId = null;
+  }
+}
+
+async function saveMembers() {
+  if (!currentProjectId || selectedMembers.size === 0) return;
+  
+  const members = [];
+  document.querySelectorAll("#memberList > div").forEach(div => {
+    const id = parseInt(div.dataset.id);
+    if (selectedMembers.has(id)) {
+      const roleSelect = div.querySelector("select");
+      members.push({
+        student_id: id,
+        isLeader: roleSelect.value === "Leader" && id === leaderId
+      });
+    }
+  });
+  
+  const r = await apiFetch("/projects/" + currentProjectId + "/members", { 
+    method: "POST", 
+    body: JSON.stringify({ members }) 
+  });
+  
+  if (r) {
+    showNotif("Members added!", "success");
+    closeMemberModal();
+    loadProjects();
+  }
+}
+
+document.addEventListener("click", (e) => {
+  if (e.target.id === "memberModal") closeMemberModal();
+});
+</script>
+
+<script>
+// Mobile table converter - transforms tables to card layout on small screens
+function makeTablesMobileResponsive(){
+  const isMobile=window.innerWidth<=640;
+  document.querySelectorAll('table').forEach(table=>{
+    const wrapper=table.parentElement;
+    if(!wrapper.classList.contains('table-responsive'))return;
+    if(isMobile){
+      if(!table.classList.contains('mobile-converted')){
+        table.querySelectorAll('tr').forEach(tr=>{
+          tr.querySelectorAll('td').forEach((td,i)=>{
+            const th=table.querySelector('thead th:nth-child('+(i+1)+')');
+            const label=th?th.textContent.trim():'Cell '+(i+1);
+            td.setAttribute('data-label',label);
+          });
+        });
+        table.classList.add('mobile-converted');
+      }
+    }else{
+      table.querySelectorAll('[data-label]').forEach(td=>td.removeAttribute('data-label'));
+      table.classList.remove('mobile-converted');
+    }
+  });
+}
+window.addEventListener('load',makeTablesMobileResponsive);
+window.addEventListener('resize',()=>{clearTimeout(window._tblTimeout);window._tblTimeout=setTimeout(makeTablesMobileResponsive,150)});
+</script>
+
+<script>
+(function(){
+  function convertTables(){
+    var isMobile=window.innerWidth<=640;
+    document.querySelectorAll('table').forEach(function(table){
+      var wrapper=table.parentElement;
+      if(!wrapper||!wrapper.classList.contains('table-responsive'))return;
+      table.querySelectorAll('tr').forEach(function(tr){
+        tr.querySelectorAll('td').forEach(function(td,i){
+          var th=table.querySelector('thead th:nth-child('+(i+1)+')');
+          var label=th?th.textContent.trim():'Cell '+(i+1);
+          if(isMobile){td.setAttribute('data-label',label)}
+          else{td.removeAttribute('data-label')}
+        });
+      });
+    });
+  }
+  convertTables();
+  window.addEventListener('resize',function(){clearTimeout(window._rt);window._rt=setTimeout(convertTables,200)});
+})();
+</script>
+</body>
+</html>

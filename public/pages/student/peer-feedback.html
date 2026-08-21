@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Peer Feedback</title>
+<link rel="stylesheet" href="/css/style.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+<style>
+.slider-row { margin-bottom:24px; padding:16px; background:var(--bg); border-radius:10px; border:1px solid var(--border); }
+.slider-label { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
+.slider-label span { font-weight:600; font-size:14px; }
+.slider-label .score-val { background:var(--primary); color:#fff; padding:2px 10px; border-radius:12px; font-size:13px; min-width:32px; text-align:center; }
+input[type="range"] { width:100%; height:6px; border-radius:3px; background:var(--border); outline:none; -webkit-appearance:none; }
+input[type="range"]::-webkit-slider-thumb { -webkit-appearance:none; width:20px; height:20px; border-radius:50%; background:var(--primary); cursor:pointer; border:2px solid #fff; box-shadow:0 1px 4px rgba(0,0,0,0.2); }
+.slider-marks { display:flex; justify-content:space-between; font-size:11px; color:var(--muted); margin-top:4px; }
+.team-member { display:flex; align-items:center; gap:12px; padding:14px; background:var(--bg); border-radius:10px; margin-bottom:10px; border:1px solid var(--border); cursor:pointer; transition:all 0.2s; }
+.team-member:hover { border-color:var(--primary); }
+.team-member.selected { border-color:var(--primary); background:var(--accent-bg); }
+.team-member i { font-size:20px; color:var(--primary); }
+.team-member .name { font-weight:600; font-size:14px; }
+.team-member .role { font-size:12px; color:var(--muted); }
+.avg-circle { width:60px; height:60px; border-radius:50%; background:conic-gradient(var(--primary) calc(var(--pct)*3.6deg), var(--border) 0); display:flex; align-items:center; justify-content:center; position:relative; }
+.avg-circle::before { content:''; width:46px; height:46px; background:var(--card); border-radius:50%; position:absolute; }
+.avg-circle span { position:absolute; font-size:13px; font-weight:700; color:var(--primary); }
+.summary-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); gap:12px; margin-bottom:20px; }
+.summary-card { background:var(--bg); border-radius:10px; padding:14px; text-align:center; border:1px solid var(--border); }
+.summary-card .label { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:6px; }
+.summary-card .value { font-size:22px; font-weight:700; color:var(--primary); }
+.summary-card .count { font-size:11px; color:var(--muted); margin-top:4px; }
+.review-item { padding:14px; background:var(--bg); border-radius:8px; margin-bottom:10px; border:1px solid var(--border); }
+.review-item .reviewer { font-weight:600; font-size:13px; color:var(--primary); }
+.review-item .reviewed { font-size:12px; color:var(--muted); }
+.review-item .scores { display:flex; gap:12px; margin:8px 0; flex-wrap:wrap; }
+.review-item .score-tag { font-size:11px; padding:2px 8px; border-radius:10px; background:var(--accent-bg); color:var(--primary); font-weight:600; }
+.review-item .comment { font-size:13px; color:var(--text); margin-top:6px; font-style:italic; }
+</style>
+</head>
+<body>
+<div class="app-layout">
+<header class="topbar">
+<div class="topbar-left"><button class="hamburger" id="hamburgerBtn"><i class="fas fa-bars"></i></button><a href="../../index.html" class="logo">DIU WorkSync</a></div>
+<div class="topbar-right">
+<button class="theme-toggle" id="themeToggle"><i class="fas fa-moon"></i></button>
+<div class="user-info"><i class="fas fa-user-circle"></i><span id="userName"></span><span id="roleBadge" class="role-badge role-student">Student</span></div>
+<button class="logout-btn" onclick="Session.logout()"><i class="fas fa-sign-out-alt"></i></button>
+</div>
+</header>
+<div class="sidebar-overlay" id="sidebarOverlay"></div>
+<aside class="sidebar" id="sidebar">
+<nav class="sidebar-nav">
+<div class="nav-section">Main</div>
+<a href="dashboard.html" class="nav-link"><i class="fas fa-tachometer-alt"></i> Dashboard</a>
+<a href="my-courses.html" class="nav-link"><i class="fas fa-book"></i> My Courses</a>
+<a href="my-tasks.html" class="nav-link"><i class="fas fa-tasks"></i> My Tasks</a>
+<a href="my-projects.html" class="nav-link"><i class="fas fa-project-diagram"></i> My Projects</a>
+<div class="nav-section">More</div>
+<a href="my-submissions.html" class="nav-link"><i class="fas fa-file-upload"></i> Submissions</a>
+<a href="contribution-report.html" class="nav-link"><i class="fas fa-chart-pie"></i> My Contribution</a>
+<a href="peer-feedback.html" class="nav-link active"><i class="fas fa-users"></i> Peer Feedback</a>
+<a href="activity.html" class="nav-link"><i class="fas fa-history"></i> Activity</a>
+<a href="profile.html" class="nav-link"><i class="fas fa-user"></i> Profile</a>
+<div class="nav-divider"></div>
+<a href="#" class="nav-link logout" onclick="Session.logout()"><i class="fas fa-sign-out-alt"></i> Logout</a>
+</nav>
+</aside>
+<main class="main-content">
+<div id="projectSelector" class="card" style="margin-bottom:20px">
+<div class="card-header"><i class="fas fa-project-diagram"></i> Select Project</div>
+<div class="form-group"><select class="form-control" id="projectSelect" onchange="loadProject(this.value)" style="max-width:400px"><option value="">-- Choose Project --</option></select></div>
+</div>
+
+<!-- Feedback Form -->
+<div id="feedbackSection" style="display:none">
+<div class="card" style="margin-bottom:20px">
+<div class="card-header"><i class="fas fa-star"></i> Rate a Team Member</div>
+<div id="memberList"></div>
+<div id="ratingForm" style="display:none;margin-top:20px">
+<h4 style="margin:0 0 16px 0" id="ratingTarget"></h4>
+<div class="slider-row">
+  <div class="slider-label"><span><i class="fas fa-lightbulb"></i> Contribution</span><span class="score-val" id="contribVal">5</span></div>
+  <input type="range" min="1" max="10" value="5" id="contribSlider" oninput="updateSlider('contrib')">
+  <div class="slider-marks"><span>1</span><span>5</span><span>10</span></div>
+</div>
+<div class="slider-row">
+  <div class="slider-label"><span><i class="fas fa-handshake"></i> Cooperation</span><span class="score-val" id="coopVal">5</span></div>
+  <input type="range" min="1" max="10" value="5" id="coopSlider" oninput="updateSlider('coop')">
+  <div class="slider-marks"><span>1</span><span>5</span><span>10</span></div>
+</div>
+<div class="slider-row">
+  <div class="slider-label"><span><i class="fas fa-comments"></i> Communication</span><span class="score-val" id="commVal">5</span></div>
+  <input type="range" min="1" max="10" value="5" id="commSlider" oninput="updateSlider('comm')">
+  <div class="slider-marks"><span>1</span><span>5</span><span>10</span></div>
+</div>
+<div class="slider-row">
+  <div class="slider-label"><span><i class="fas fa-flag"></i> Responsibility</span><span class="score-val" id="respVal">5</span></div>
+  <input type="range" min="1" max="10" value="5" id="respSlider" oninput="updateSlider('resp')">
+  <div class="slider-marks"><span>1</span><span>5</span><span>10</span></div>
+</div>
+<div class="form-group"><label>Comments (optional)</label><textarea class="form-control" id="feedbackComment" rows="2" placeholder="Add any comments..."></textarea></div>
+<button class="btn btn-primary" onclick="submitFeedback()"><i class="fas fa-paper-plane"></i> Submit Feedback</button>
+</div>
+</div>
+
+<!-- Summary -->
+<div class="card" style="margin-bottom:20px">
+<div class="card-header"><i class="fas fa-chart-bar"></i> Peer Review Summary</div>
+<div id="summaryContent"></div>
+</div>
+
+<!-- My Reviews -->
+<div class="card">
+<div class="card-header"><i class="fas fa-history"></i> My Reviews</div>
+<div id="myReviewsContent"></div>
+</div>
+</main>
+<footer class="main-footer">&copy; 2026 DIU WorkSync</footer>
+</div>
+<script src="/js/app.js"></script>
+<script>
+requireAuth(); requireRole("student");
+const s = Session.get();
+$("#userName").textContent = s.name;
+
+let currentProjectId = null;
+let currentTargetId = null;
+let myMembers = [];
+
+(async function init() {
+  const [projects, members] = await Promise.all([apiFetch("/projects"), apiFetch("/projects/" + s.id + "/members")]);
+  // Load projects
+  const sel = $("#projectSelect");
+  (projects || []).filter(p => p.teacher_id === s.id || (members && members.some(m => m.project_id === p.id))).forEach(p => {
+    sel.append("<option value='" + p.id + "'>" + escapeHtml(p.title) + " (" + escapeHtml(p.group_name || "Group") + ")</option>");
+  });
+})();
+
+async function loadProject(projectId) {
+  if (!projectId) return;
+  currentProjectId = projectId;
+  const [members, reviews, summary] = await Promise.all([
+    apiFetch("/projects/" + projectId + "/members"),
+    apiFetch("/peer_reviews/" + projectId),
+    apiFetch("/peer_reviews/" + projectId + "/summary"),
+  ]);
+  myMembers = members || [];
+  renderMemberList(members || []);
+  renderSummary(summary || []);
+  renderMyReviews(reviews || []);
+  $("#feedbackSection").style.display = "block";
+}
+
+function renderMemberList(members) {
+  const others = members.filter(m => m.student_id !== s.id);
+  if (!others.length) {
+    $("#memberList").innerHTML = "<div class='empty-state'><i class='fas fa-users'></i><p>No other team members to rate</p></div>";
+    return;
+  }
+  $("#memberList").innerHTML = "<p style='margin:0 0 12px;color:var(--muted);font-size:13px'>Click a team member to rate them:</p>" +
+    others.map(m => "<div class='team-member' onclick='selectMember(" + m.student_id + ", \"" + escapeHtml(m.name) + "\", \"" + escapeHtml(m.role) + "\")'>" +
+      "<i class='fas fa-user'></i><div><div class='name'>" + escapeHtml(m.name) + "</div><div class='role'>" + escapeHtml(m.role) + "</div></div></div>"
+    ).join("");
+}
+
+function selectMember(studentId, name, role) {
+  currentTargetId = studentId;
+  document.querySelectorAll(".team-member").forEach(el => el.classList.remove("selected"));
+  event.currentTarget.classList.add("selected");
+  $("#ratingTarget").textContent = "Rating: " + name + " (" + role + ")";
+  $("#ratingForm").style.display = "block";
+  // Reset sliders
+  ["contrib","coop","comm","resp"].forEach(k => {
+    document.getElementById(k+"Slider").value = 5;
+    document.getElementById(k+"Val").textContent = "5";
+  });
+  $("#feedbackComment").value = "";
+}
+
+function updateSlider(type) {
+  const val = document.getElementById(type+"Slider").value;
+  document.getElementById(type+"Val").textContent = val;
+}
+
+async function submitFeedback() {
+  if (!currentTargetId) return;
+  const data = {
+    project_id: currentProjectId,
+    reviewed_student_id: currentTargetId,
+    contribution_score: parseInt($("#contribSlider").value),
+    cooperation_score: parseInt($("#coopSlider").value),
+    communication_score: parseInt($("#commSlider").value),
+    responsibility_score: parseInt($("#respSlider").value),
+    comment: $("#feedbackComment").value.trim()
+  };
+  const r = await apiFetch("/peer_reviews", { method: "POST", body: JSON.stringify(data) });
+  if (r?.success) {
+    showNotif("Feedback submitted!", "success");
+    loadProject(currentProjectId);
+  } else {
+    showNotif(r?.error || "Failed to submit", "error");
+  }
+}
+
+function renderSummary(summary) {
+  const el = $("#summaryContent");
+  if (!summary.length) { el.innerHTML = "<div class='empty-state'><i class='fas fa-chart-bar'></i><p>No reviews yet</p></div>"; return; }
+  el.innerHTML = summary.map(m => {
+    const avg = ((m.avg_contribution + m.avg_cooperation + m.avg_communication + m.avg_responsibility) / 4).toFixed(1);
+    return "<div style='display:flex;align-items:center;gap:16px;padding:14px;background:var(--bg);border-radius:10px;margin-bottom:10px;border:1px solid var(--border)'>" +
+      "<div class='avg-circle' style='--pct:"+avg+ "'><span>" + avg + "</span></div>" +
+      "<div style='flex:1'><strong>" + escapeHtml(m.name) + "</strong>" +
+        "<div style='display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;font-size:12px;color:var(--muted);margin-top:6px'>" +
+          "<span>Contribution: <strong style='color:var(--text)'>" + m.avg_contribution.toFixed(1) + "</strong></span>" +
+          "<span>Cooperation: <strong style='color:var(--text)'>" + m.avg_cooperation.toFixed(1) + "</strong></span>" +
+          "<span>Communication: <strong style='color:var(--text)'>" + m.avg_communication.toFixed(1) + "</strong></span>" +
+          "<span>Responsibility: <strong style='color:var(--text)'>" + m.avg_responsibility.toFixed(1) + "</strong></span>" +
+        "</div></div>" +
+        "<div style='text-align:center'><div style='font-size:12px;color:var(--muted)'>Reviews</div><div style='font-size:18px;font-weight:700;color:var(--primary)'>" + m.review_count + "</div></div>" +
+    "</div>";
+  }).join("");
+}
+
+function renderMyReviews(reviews) {
+  const myReviews = reviews.filter(r => r.reviewer_id === s.id);
+  const el = $("#myReviewsContent");
+  if (!myReviews.length) { el.innerHTML = "<div class='empty-state'><i class='fas fa-history'></i><p>No reviews submitted yet</p></div>"; return; }
+  el.innerHTML = myReviews.map(r => "<div class='review-item'>" +
+    "<div class='reviewer'><i class='fas fa-user-check'></i> You rated <strong>" + escapeHtml(r.reviewed_name) + "</strong></div>" +
+    "<div class='scores'>" +
+      "<span class='score-tag'>Contribution: " + r.contribution_score + "</span>" +
+      "<span class='score-tag'>Cooperation: " + r.cooperation_score + "</span>" +
+      "<span class='score-tag'>Communication: " + r.communication_score + "</span>" +
+      "<span class='score-tag'>Responsibility: " + r.responsibility_score + "</span>" +
+    "</div>" +
+    (r.comment ? "<div class='comment'>\"" + escapeHtml(r.comment) + "\"</div>" : "") +
+    "<div class='reviewed'>" + formatDateTime(r.submitted_at) + "</div>" +
+  "</div>").join("");
+}
+</script>
+</body>
+</html>

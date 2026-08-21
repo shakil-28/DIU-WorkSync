@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>My Contribution</title>
+<link rel="stylesheet" href="/css/style.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+<style>
+.score-circle { width:120px; height:120px; border-radius:50%; background:conic-gradient(var(--primary) calc(var(--pct) * 3.6deg), var(--border) 0); display:flex; align-items:center; justify-content:center; margin:0 auto 16px; position:relative; }
+.score-circle::before { content:''; width:90px; height:90px; background:var(--card); border-radius:50%; position:absolute; }
+.score-circle span { position:absolute; font-size:24px; font-weight:700; color:var(--primary); }
+.member-row { display:flex; align-items:center; gap:12px; padding:12px 0; border-bottom:1px solid var(--border); }
+.member-row:last-child { border-bottom:none; }
+.member-bar { height:8px; border-radius:4px; background:var(--primary); min-width:4px; }
+.formula-box { background:#f0f4ff; border-radius:8px; padding:14px; margin-bottom:16px; font-size:13px; }
+.formula-box strong { color:var(--primary); }
+</style>
+</head>
+<body>
+<div class="app-layout">
+<header class="topbar">
+<div class="topbar-left"><button class="hamburger" id="hamburgerBtn"><i class="fas fa-bars"></i></button><a href="../../index.html" class="logo">DIU WorkSync</a></div>
+<div class="topbar-right">
+<button class="theme-toggle" id="themeToggle"><i class="fas fa-moon"></i></button>
+<div class="user-info"><i class="fas fa-user-circle"></i><span id="userName"></span><span id="roleBadge" class="role-student">Student</span></div>
+<button class="logout-btn" onclick="Session.logout()"><i class="fas fa-sign-out-alt"></i></button>
+</div>
+</header>
+<div class="sidebar-overlay" id="sidebarOverlay"></div>
+<aside class="sidebar" id="sidebar">
+<nav class="sidebar-nav">
+<div class="nav-section">Main</div>
+<a href="dashboard.html" class="nav-link"><i class="fas fa-tachometer-alt"></i> Dashboard</a>
+<a href="my-courses.html" class="nav-link"><i class="fas fa-book"></i> My Courses</a>
+<a href="my-tasks.html" class="nav-link"><i class="fas fa-tasks"></i> My Tasks</a>
+<a href="my-projects.html" class="nav-link"><i class="fas fa-project-diagram"></i> My Projects</a>
+<div class="nav-section">More</div>
+<a href="my-submissions.html" class="nav-link"><i class="fas fa-file-upload"></i> Submissions</a>
+<a href="contribution-report.html" class="nav-link active"><i class="fas fa-chart-pie"></i> My Contribution</a>
+<a href="activity.html" class="nav-link"><i class="fas fa-history"></i> Activity</a>
+<a href="profile.html" class="nav-link"><i class="fas fa-user"></i> Profile</a>
+<div class="nav-divider"></div>
+<a href="#" class="nav-link logout" onclick="Session.logout()"><i class="fas fa-sign-out-alt"></i> Logout</a>
+</nav>
+</aside>
+<main class="main-content">
+<div class="card">
+<div class="card-header">My Contribution Report</div>
+<div class="formula-box">
+<strong>Contribution Formula:</strong> Final Score = Weight % × Average Review Score<br>
+Your final contribution is calculated based on your assigned weight and the scores your submissions received from the teacher.
+</div>
+<div id="reportContent"></div>
+</div>
+</main>
+<footer class="main-footer">&copy; 2026 DIU WorkSync</footer>
+</div>
+<script src="/js/app.js"></script>
+<script>
+requireAuth(); requireRole("student");
+const s = Session.get();
+$("#userName").textContent = s.name;
+
+const params = new URLSearchParams(window.location.search);
+const projectId = params.get("pid");
+
+(async function loadReport() {
+  if (!projectId) { window.location.href = "/pages/student/my-projects.html"; return; }
+  const members = await apiFetch("/contributions/" + projectId);
+  if (!members) return;
+  const me = members.find(m => m.id === s.id);
+  const content = $("#reportContent");
+  if (me) {
+    const finalScore = Math.min(100, Math.round(me.weight_percent * (me.score || 0) / 100));
+    const maxScore = Math.max(...members.map(m => Math.min(100, Math.round(m.weight_percent * (m.score || 0) / 100))), 1);
+    const myBarWidth = (finalScore / maxScore) * 100;
+    const sorted = [...members].sort((a, b) => {
+      const sa = Math.min(100, Math.round(a.weight_percent * (a.score || 0) / 100));
+      const sb = Math.min(100, Math.round(b.weight_percent * (b.score || 0) / 100));
+      return sb - sa;
+    });
+    const rank = sorted.findIndex(m => m.id === s.id) + 1;
+    content.innerHTML = 
+      "<div style='text-align:center;padding:20px'>" +
+        "<div class='score-circle' style='--pct:" + finalScore + "'><span>" + finalScore + "</span></div>" +
+        "<h3>" + escapeHtml(me.name) + "</h3>" +
+        "<p>Rank: <strong>#" + rank + " of " + members.length + "</strong></p>" +
+        "<p>Weight: <strong>" + me.weight_percent + "%</strong> | Avg Score: <strong>" + (me.score || 0) + "</strong></p>" +
+        "<p>Status: <span class='badge " + getStatusClass(me.review_status) + "'>" + me.review_status + "</span></p>" +
+      "</div>" +
+      "<h4 style='margin:16px 0 8px'>Team Comparison</h4>" +
+      "<div class='table-responsive'><table><tr><th>Rank</th><th>Member</th><th>Weight</th><th>Avg Score</th><th>Final</th><th>Status</th></tr>" +
+      sorted.map((m, i) => {
+        const fs = Math.min(100, Math.round(m.weight_percent * (m.score || 0) / 100));
+        return "<tr" + (m.id === s.id ? " style='background:var(--accent-bg)'" : "") + ">" +
+          "<td>" + (i + 1) + "</td>" +
+          "<td><strong>" + escapeHtml(m.name) + "</strong" + (m.id === s.id ? " style='color:var(--primary)'" : "") + "></td>" +
+          "<td>" + m.weight_percent + "%</td>" +
+          "<td>" + (m.score || 0) + "</td>" +
+          "<td class='final'>" + fs + "</td>" +
+          "<td><span class='badge " + getStatusClass(m.review_status) + "'>" + m.review_status + "</span></td>" +
+        "</tr>";
+      }).join("") +
+      "</table></div>";
+  } else {
+    content.innerHTML = "<div class='empty-state'><i class='fas fa-chart-pie'></i><p>No contribution data</p></div>";
+  }
+})();
+</script>
+</body>
+</html>

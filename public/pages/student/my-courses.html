@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>My Courses</title>
+<link rel="stylesheet" href="/css/style.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+</head>
+<body>
+<div class="app-layout">
+<header class="topbar">
+<div class="topbar-left"><button class="hamburger" id="hamburgerBtn"><i class="fas fa-bars"></i></button><a href="../../index.html" class="logo">DIU WorkSync</a></div>
+<div class="topbar-right">
+<button class="theme-toggle" id="themeToggle"><i class="fas fa-moon"></i></button>
+<div class="user-info"><i class="fas fa-user-circle"></i><span id="userName"></span><span id="roleBadge" class="role-badge role-student">Student</span></div>
+<button class="logout-btn" onclick="Session.logout()"><i class="fas fa-sign-out-alt"></i></button>
+</div>
+</header>
+<div class="sidebar-overlay" id="sidebarOverlay"></div>
+<aside class="sidebar" id="sidebar">
+<nav class="sidebar-nav">
+<div class="nav-section">Main</div>
+<a href="dashboard.html" class="nav-link"><i class="fas fa-tachometer-alt"></i> Dashboard</a>
+<a href="my-courses.html" class="nav-link active"><i class="fas fa-book"></i> My Courses</a>
+<a href="my-tasks.html" class="nav-link"><i class="fas fa-tasks"></i> My Tasks</a>
+<a href="my-projects.html" class="nav-link"><i class="fas fa-project-diagram"></i> My Projects</a>
+<div class="nav-section">More</div>
+<a href="my-submissions.html" class="nav-link"><i class="fas fa-file-upload"></i> Submissions</a>
+<a href="contribution-report.html" class="nav-link"><i class="fas fa-chart-pie"></i> My Contribution</a>
+<a href="activity.html" class="nav-link"><i class="fas fa-history"></i> Activity</a>
+<a href="profile.html" class="nav-link"><i class="fas fa-user"></i> Profile</a>
+<div class="nav-divider"></div>
+<a href="#" class="nav-link logout" onclick="Session.logout()"><i class="fas fa-sign-out-alt"></i> Logout</a>
+</nav>
+</aside>
+<main class="main-content">
+<div class="card">
+<div class="card-header">My Courses</div>
+<div class="search-bar">
+  <div class="search-icon" style="flex:1">
+    <i class="fas fa-search"></i>
+    <input type="text" class="search-input" id="courseSearch" placeholder="Search courses..." oninput="applyCourseFilters()">
+  </div>
+</div>
+<div id="courseResultsCount" class="results-count"></div>
+<div class="table-responsive">
+<table>
+<tr><th>Course Code</th><th>Course Name</th><th>Semester</th><th>Projects</th></tr>
+<tbody id="courseTable"></tbody>
+</table>
+</div>
+<div id="coursePagination"></div>
+</div>
+</main>
+<footer class="main-footer">&copy; 2026 DIU WorkSync</footer>
+</div>
+<script src="/js/app.js"></script>
+<script>
+requireAuth(); requireRole("student");
+const s = Session.get();
+$("#userName").textContent = s.name;
+
+(async function loadCourses() {
+  const courses = await apiFetch("/courses");
+  if (!courses) return;
+  const tbody = $("#courseTable");
+  if (courses.length) {
+    tbody.innerHTML = courses.map(c =>
+      "<tr><td><strong>" + escapeHtml(c.course_code) + "</strong></td<td>" + escapeHtml(c.course_name) + "</td><td>" + escapeHtml(c.semester) + "</td><td>" + (c.project_count || 0) + "</td></tr>"
+    ).join("");
+  } else {
+    tbody.innerHTML = "<tr><td colspan='4'><div class='empty-state'><i class='fas fa-book'></i><p>No courses enrolled</p></div></td></tr>";
+  }
+})();
+</script>
+
+<script>
+// Mobile table converter - transforms tables to card layout on small screens
+function makeTablesMobileResponsive(){
+  const isMobile=window.innerWidth<=640;
+  document.querySelectorAll('table').forEach(table=>{
+    const wrapper=table.parentElement;
+    if(!wrapper.classList.contains('table-responsive'))return;
+    if(isMobile){
+      if(!table.classList.contains('mobile-converted')){
+        table.querySelectorAll('tr').forEach(tr=>{
+          tr.querySelectorAll('td').forEach((td,i)=>{
+            const th=table.querySelector('thead th:nth-child('+(i+1)+')');
+            const label=th?th.textContent.trim():'Cell '+(i+1);
+            td.setAttribute('data-label',label);
+          });
+        });
+        table.classList.add('mobile-converted');
+      }
+    }else{
+      table.querySelectorAll('[data-label]').forEach(td=>td.removeAttribute('data-label'));
+      table.classList.remove('mobile-converted');
+    }
+  });
+}
+window.addEventListener('load',makeTablesMobileResponsive);
+window.addEventListener('resize',()=>{clearTimeout(window._tblTimeout);window._tblTimeout=setTimeout(makeTablesMobileResponsive,150)});
+</script>
+
+<script>
+(function(){
+  function convertTables(){
+    var isMobile=window.innerWidth<=640;
+    document.querySelectorAll('table').forEach(function(table){
+      var wrapper=table.parentElement;
+      if(!wrapper||!wrapper.classList.contains('table-responsive'))return;
+      table.querySelectorAll('tr').forEach(function(tr){
+        tr.querySelectorAll('td').forEach(function(td,i){
+          var th=table.querySelector('thead th:nth-child('+(i+1)+')');
+          var label=th?th.textContent.trim():'Cell '+(i+1);
+          if(isMobile){td.setAttribute('data-label',label)}
+          else{td.removeAttribute('data-label')}
+        });
+      });
+    });
+  }
+  convertTables();
+  window.addEventListener('resize',function(){clearTimeout(window._rt);window._rt=setTimeout(convertTables,200)});
+})();
+</script>
+</body>
+</html>

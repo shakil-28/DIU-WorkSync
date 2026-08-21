@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Project Discussion</title>
+<link rel="stylesheet" href="/css/style.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+<style>
+.comment-item { padding:14px; background:var(--bg); border-radius:10px; margin-bottom:10px; border:1px solid var(--border); }
+.comment-item .header { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
+.comment-item .author { font-weight:600; font-size:14px; }
+.comment-item .author .role { font-size:11px; padding:2px 8px; border-radius:10px; margin-left:8px; }
+.comment-item .role-teacher { background:#fef3c7; color:#92400e; }
+.comment-item .role-student { background:#dbeafe; color:#1e40af; }
+.comment-item .time { font-size:11px; color:var(--muted); }
+.comment-item .body { font-size:14px; color:var(--text); line-height:1.5; }
+.comment-item .delete-btn { background:none; border:none; color:var(--muted); cursor:pointer; font-size:14px; padding:2px 6px; border-radius:4px; }
+.comment-item .delete-btn:hover { background:#fee2e2; color:#ef4444; }
+.comment-form { display:flex; gap:10px; margin-top:16px; }
+.comment-form textarea { flex:1; resize:none; }
+.project-badge { display:inline-flex; align-items:center; gap:6px; padding:6px 12px; background:var(--accent-bg); border-radius:20px; font-size:13px; font-weight:600; color:var(--primary); margin-bottom:16px; }
+</style>
+</head>
+<body>
+<div class="app-layout">
+<header class="topbar">
+<div class="topbar-left"><button class="hamburger" id="hamburgerBtn"><i class="fas fa-bars"></i></button><a href="../../index.html" class="logo">DIU WorkSync</a></div>
+<div class="topbar-right">
+<button class="theme-toggle" id="themeToggle"><i class="fas fa-moon"></i></button>
+<div class="user-info"><i class="fas fa-user-circle"></i><span id="userName"></span><span id="roleBadge" class="role-badge role-student">Student</span></div>
+<button class="logout-btn" onclick="Session.logout()"><i class="fas fa-sign-out-alt"></i></button>
+</div>
+</header>
+<div class="sidebar-overlay" id="sidebarOverlay"></div>
+<aside class="sidebar" id="sidebar">
+<nav class="sidebar-nav">
+<div class="nav-section">Main</div>
+<a href="dashboard.html" class="nav-link"><i class="fas fa-tachometer-alt"></i> Dashboard</a>
+<a href="my-courses.html" class="nav-link"><i class="fas fa-book"></i> My Courses</a>
+<a href="my-tasks.html" class="nav-link"><i class="fas fa-tasks"></i> My Tasks</a>
+<a href="my-projects.html" class="nav-link"><i class="fas fa-project-diagram"></i> My Projects</a>
+<div class="nav-section">More</div>
+<a href="my-submissions.html" class="nav-link"><i class="fas fa-file-upload"></i> Submissions</a>
+<a href="contribution-report.html" class="nav-link"><i class="fas fa-chart-pie"></i> My Contribution</a>
+<a href="peer-feedback.html" class="nav-link"><i class="fas fa-users"></i> Peer Feedback</a>
+<a href="project-discussion.html" class="nav-link active"><i class="fas fa-comments"></i> Discussion</a>
+<a href="activity.html" class="nav-link"><i class="fas fa-history"></i> Activity</a>
+<a href="profile.html" class="nav-link"><i class="fas fa-user"></i> Profile</a>
+<div class="nav-divider"></div>
+<a href="#" class="nav-link logout" onclick="Session.logout()"><i class="fas fa-sign-out-alt"></i> Logout</a>
+</nav>
+</aside>
+<main class="main-content">
+<div id="projectSelector" class="card" style="margin-bottom:20px">
+<div class="card-header"><i class="fas fa-project-diagram"></i> Select Project</div>
+<div class="form-group"><select class="form-control" id="projectSelect" onchange="loadDiscussion(this.value)" style="max-width:400px"><option value="">-- Choose Project --</option></select></div>
+</div>
+<div id="discussionSection" style="display:none">
+<div id="projectBadge"></div>
+<div class="card">
+<div class="card-header"><i class="fas fa-comments"></i> Discussion <span id="commentCount" class="text-muted" style="font-weight:400;font-size:13px"></span></div>
+<div id="commentList" style="max-height:500px;overflow-y:auto"></div>
+<div class="comment-form">
+<textarea class="form-control" id="commentInput" rows="3" placeholder="Type your message..."></textarea>
+<button class="btn btn-primary" onclick="postComment()"><i class="fas fa-paper-plane"></i> Send</button>
+</div>
+</div>
+</div>
+</main>
+<footer class="main-footer">&copy; 2026 DIU WorkSync</footer>
+</div>
+<script src="/js/app.js"></script>
+<script>
+requireAuth(); requireRole("student");
+const s = Session.get();
+$("#userName").textContent = s.name;
+let currentProjectId = null;
+let currentProjectTitle = "";
+
+(async function init() {
+  const projects = await apiFetch("/projects");
+  const sel = $("#projectSelect");
+  (projects || []).forEach(p => {
+    sel.append("<option value='" + p.id + "'>" + escapeHtml(p.title) + " (" + escapeHtml(p.group_name || "Group") + ")</option>");
+  });
+})();
+
+async function loadDiscussion(projectId) {
+  if (!projectId) { $("#discussionSection").style.display = "none"; return; }
+  currentProjectId = projectId;
+  const projects = await apiFetch("/projects");
+  const proj = (projects || []).find(p => p.id == projectId);
+  currentProjectTitle = proj?.title || projectId;
+  $("#projectBadge").innerHTML = "<span class='project-badge'><i class='fas fa-project-diagram'></i> " + escapeHtml(currentProjectTitle) + "</span>";
+  loadComments();
+}
+
+async function loadComments() {
+  if (!currentProjectId) return;
+  const comments = await apiFetch("/comments/" + currentProjectId);
+  const el = $("#commentList");
+  $("#commentCount").textContent = "(" + (comments?.length || 0) + " comments)";
+  if (!comments?.length) {
+    el.innerHTML = "<div class='empty-state'><i class='fas fa-comment-slash'></i><p>No comments yet. Start the discussion!</p></div>";
+    return;
+  }
+  el.innerHTML = comments.map(c => "<div class='comment-item' id='comment-" + c.id + "'>" +
+    "<div class='header'>" +
+      "<span class='author'>" + escapeHtml(c.name) + " <span class='role role-" + c.role + "'>" + (c.role === "teacher" ? "Teacher" : "Student") + "</span></span>" +
+      "<span class='time'>" + formatDateTime(c.created_at) + "</span>" +
+    "</div>" +
+    "<div class='body'>" + escapeHtml(c.message) + "</div>" +
+    "<button class='delete-btn' onclick='deleteComment(" + c.id + ")' title='Delete'><i class='fas fa-trash'></i></button>" +
+  "</div>").join("");
+  el.scrollTop = el.scrollHeight;
+}
+
+async function postComment() {
+  const msg = $("#commentInput").value.trim();
+  if (!msg || !currentProjectId) return;
+  const r = await apiFetch("/comments", { method: "POST", body: JSON.stringify({ project_id: currentProjectId, message: msg })});
+  if (r) {
+    $("#commentInput").value = "";
+    loadComments();
+  }
+}
+
+async function deleteComment(id) {
+  if (!confirm("Delete this comment?")) return;
+  const r = await apiFetch("/comments/" + id, { method: "DELETE" });
+  if (r?.success) {
+    const el = document.getElementById("comment-" + id);
+    if (el) el.remove();
+    $("#commentCount").textContent = "(" + ($("#commentList .comment-item").length) + " comments)";
+  }
+}
+
+document.getElementById("commentInput").addEventListener("keydown", function(e) {
+  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) postComment();
+});
+</script>
+</body>
+</html>

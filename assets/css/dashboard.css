@@ -1,0 +1,15 @@
+/* Dashboard specific styles */
+.welcome-banner {
+    background: linear-gradient(135deg, var(--primary), #667eea);
+    color: #fff; border-radius: var(--radius); padding: 30px; margin-bottom: 25px;
+}
+.welcome-banner h2 { font-size: 1.5rem; margin-bottom: 8px; }
+.welcome-banner p { opacity: 0.9; }
+.task-list { list-style: none; }
+.task-list li {
+    padding: 12px 0; border-bottom: 1px solid var(--border);
+    display: flex; justify-content: space-between; align-items: center;
+}
+.task-list li:last-child { border-bottom: none; }
+.empty-state { text-align: center; padding: 40px; color: var(--text-muted); }
+.empty-state i { font-size: 3rem; margin-bottom: 15px; opacity: 0.3; }

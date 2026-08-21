@@ -1,0 +1,13 @@
+# Uploads
+/pages/uploads/*
+!/.gitignore
+
+# Config (keep schema but not local DB config)
+/config/database.php
+
+# PHP session files
+/tmp/*.sess
+
+# OS files
+.DS_Store
+Thumbs.db

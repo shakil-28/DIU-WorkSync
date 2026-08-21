@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Announcements</title>
+<link rel="stylesheet" href="/css/style.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+</head>
+<body>
+<div class="app-layout">
+<header class="topbar">
+<div class="topbar-left"><button class="hamburger" id="hamburgerBtn"><i class="fas fa-bars"></i></button><a href="../../index.html" class="logo">DIU WorkSync</a></div>
+<div class="topbar-right">
+<button class="theme-toggle" id="themeToggle"><i class="fas fa-moon"></i></button>
+<div class="user-info"><i class="fas fa-user-circle"></i><span id="userName"></span><span id="roleBadge" class="role-badge role-teacher">Teacher</span></div>
+<button class="logout-btn" onclick="Session.logout()"><i class="fas fa-sign-out-alt"></i></button>
+</div>
+</header>
+<div class="sidebar-overlay" id="sidebarOverlay"></div>
+<aside class="sidebar" id="sidebar">
+<nav class="sidebar-nav">
+<div class="nav-section">Main</div>
+<a href="dashboard.html" class="nav-link"><i class="fas fa-tachometer-alt"></i> Dashboard</a>
+<a href="courses.html" class="nav-link"><i class="fas fa-book"></i> Courses</a>
+<a href="projects.html" class="nav-link"><i class="fas fa-project-diagram"></i> Projects</a>
+<a href="tasks.html" class="nav-link"><i class="fas fa-tasks"></i> Tasks</a>
+<div class="nav-section">Management</div>
+<a href="submissions.html" class="nav-link"><i class="fas fa-file-upload"></i> Submissions</a>
+<a href="reports.html" class="nav-link"><i class="fas fa-chart-bar"></i> Reports</a>
+<a href="announcements.html" class="nav-link active"><i class="fas fa-bullhorn"></i> Announcements</a>
+<div class="nav-divider"></div>
+<a href="#" class="nav-link logout" onclick="Session.logout()"><i class="fas fa-sign-out-alt"></i> Logout</a>
+</nav>
+</aside>
+<main class="main-content">
+<div class="card">
+<div class="card-header">Post Announcement</div>
+<form onsubmit="postAnnouncement(event)">
+<div style="display:grid;grid-template-columns:1fr 2fr;gap:15px">
+<div class="form-group"><label>Course</label><select class="form-control" id="annCourse" required></select></div>
+<div class="form-group"><label>Title</label><input type="text" class="form-control" id="annTitle" required placeholder="Announcement title"></div>
+<div class="form-group" style="grid-column:1/-1"><label>Message</label><textarea class="form-control" id="annMessage" rows="3" required></textarea></div>
+</div>
+<button type="submit" class="btn btn-primary"><i class="fas fa-bullhorn"></i> Post</button>
+</form>
+</div>
+<div class="card">
+<div class="card-header">Recent Announcements</div>
+<div id="annList"></div>
+</div>
+</main>
+<footer class="main-footer">&copy; 2026 DIU WorkSync</footer>
+</div>
+<script src="/js/app.js"></script>
+<script>
+requireAuth(); requireRole("teacher");
+const s = Session.get();
+$("#userName").textContent = s.name;
+
+(async function init() {
+  const [courses, anns] = await Promise.all([apiFetch("/courses"), apiFetch("/announcements")]);
+  if (!courses) return;
+  $("#annCourse").innerHTML = courses.map(c => "<option value='" + c.id + "'>" + escapeHtml(c.course_code) + " - " + escapeHtml(c.course_name) + "</option>").join("");
+  renderAnnouncements(anns || []);
+})();
+
+async function postAnnouncement(e) {
+  e.preventDefault();
+  const course_id = parseInt($("#annCourse").value);
+  const title = $("#annTitle").value.trim();
+  const message = $("#annMessage").value.trim();
+  const r = await apiFetch("/announcements", { method: "POST", body: JSON.stringify({ course_id, title, message }) });
+  if (r) {
+    showNotif("Announcement posted!", "success");
+    $("#annTitle").value = ""; $("#annMessage").value = "";
+    const anns = await apiFetch("/announcements");
+    renderAnnouncements(anns || []);
+  }
+}
+
+async function deleteAnnouncement(id, btn) {
+  if (!confirm("Delete this announcement?")) return;
+  const r = await apiFetch("/announcements/" + id, { method: "DELETE" });
+  if (r?.success) {
+    btn.closest("div[style]").remove();
+    showNotif("Announcement deleted", "success");
+  }
+}
+
+function renderAnnouncements(anns) {
+  const el = $("#annList");
+  if (anns.length) {
+    el.innerHTML = anns.map(a => "<div style='padding:15px 0;border-bottom:1px solid var(--border)'><div style='display:flex;justify-content:space-between;align-items:start'><div style='flex:1'><strong>" + escapeHtml(a.title) + "</strong><br><small class='text-muted'>" + formatDate(a.posted_at) + " | " + escapeHtml(a.course_code) + "</small></div><p style='margin-top:8px;color:var(--muted);flex:2;margin-left:15px'>" + escapeHtml(a.message) + "</p><button class='btn btn-sm btn-danger' onclick='deleteAnnouncement(" + a.id + ", this)' style='margin-left:10px;flex-shrink:0'><i class='fas fa-trash'></i></button></div></div>").join("");
+  } else {
+    el.innerHTML = "<div class='empty-state'><i class='fas fa-bullhorn'></i><p>No announcements</p></div>";
+  }
+}
+</script>
+</body>
+</html>

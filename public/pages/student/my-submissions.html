@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>My Submissions</title>
+<link rel="stylesheet" href="/css/style.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+</head>
+<body>
+<div class="app-layout">
+<header class="topbar">
+<div class="topbar-left"><button class="hamburger" id="hamburgerBtn"><i class="fas fa-bars"></i></button><a href="../../index.html" class="logo">DIU WorkSync</a></div>
+<div class="topbar-right">
+<button class="theme-toggle" id="themeToggle"><i class="fas fa-moon"></i></button>
+<div class="user-info"><i class="fas fa-user-circle"></i><span id="userName"></span><span id="roleBadge" class="role-badge role-student">Student</span></div>
+<button class="logout-btn" onclick="Session.logout()"><i class="fas fa-sign-out-alt"></i></button>
+</div>
+</header>
+<div class="sidebar-overlay" id="sidebarOverlay"></div>
+<aside class="sidebar" id="sidebar">
+<nav class="sidebar-nav">
+<div class="nav-section">Main</div>
+<a href="dashboard.html" class="nav-link"><i class="fas fa-tachometer-alt"></i> Dashboard</a>
+<a href="my-courses.html" class="nav-link"><i class="fas fa-book"></i> My Courses</a>
+<a href="my-tasks.html" class="nav-link"><i class="fas fa-tasks"></i> My Tasks</a>
+<a href="my-projects.html" class="nav-link"><i class="fas fa-project-diagram"></i> My Projects</a>
+<div class="nav-section">More</div>
+<a href="my-submissions.html" class="nav-link active"><i class="fas fa-file-upload"></i> Submissions</a>
+<a href="contribution-report.html" class="nav-link"><i class="fas fa-chart-pie"></i> My Contribution</a>
+<a href="activity.html" class="nav-link"><i class="fas fa-history"></i> Activity</a>
+<a href="profile.html" class="nav-link"><i class="fas fa-user"></i> Profile</a>
+<div class="nav-divider"></div>
+<a href="#" class="nav-link logout" onclick="Session.logout()"><i class="fas fa-sign-out-alt"></i> Logout</a>
+</nav>
+</aside>
+<main class="main-content">
+<div class="card">
+<div class="card-header">
+<span><i class="fas fa-file-upload"></i> My Submissions</span>
+<button class="btn btn-sm btn-outline" onclick="viewHistory()"><i class="fas fa-history"></i> Review History</button>
+</div>
+<div class="search-bar">
+  <div class="search-icon" style="flex:1">
+    <i class="fas fa-search"></i>
+    <input type="text" class="search-input" id="subSearch" placeholder="Search submissions..." oninput="applySubFilters()">
+  </div>
+</div>
+<div id="subResultsCount" class="results-count"></div>
+<div class="table-responsive">
+<table>
+<tr><th>Task</th><th>Submitted</th><th>Score</th><th>Status</th><th>Feedback</th></tr>
+<tbody id="subTable"></tbody>
+</table>
+</div>
+</div>
+<div id="subPagination"></div>
+</main>
+
+<!-- Review History Modal -->
+<div id="historyModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:2000;align-items:center;justify-content:center">
+<div class="card" style="max-width:700px;width:90%;max-height:80vh;overflow-y:auto">
+<div class="card-header">
+<span><i class="fas fa-history"></i> My Review History</span>
+<button onclick="closeHistoryModal()" style="background:none;border:none;font-size:1.5rem;cursor:pointer;position:absolute;right:15px;top:15px">&times;</button>
+</div>
+<div id="historyList"></div>
+</div>
+</div>
+
+<script src="/js/app.js"></script>
+<script>
+requireAuth(); requireRole("student");
+const s = Session.get();
+$("#userName").textContent = s.name;
+
+let allSubmissions = [];
+let subPage = 1;
+const SUBS_PER_PAGE = 8;
+
+(async function loadSubmissions() {
+  allSubmissions = await apiFetch("/submissions");
+  if (!allSubmissions) return;
+  applySubFilters();
+})();
+
+function applySubFilters() {
+  const query = ($("#subSearch").value || "").trim();
+  const result = applyFilters(allSubmissions, query, {}, subPage, SUBS_PER_PAGE);
+  renderSubmissions(result.items, result);
+}
+
+function renderSubmissions(subs, pagInfo) {
+  const tbody = $("#subTable");
+  const countEl = $("#subResultsCount");
+  const pageEl = $("#subPagination");
+  if (countEl) countEl.textContent = pagInfo ? (pagInfo.total === allSubmissions.length ? "Showing all " + pagInfo.total + " submissions" : "Showing " + pagInfo.items.length + " of " + pagInfo.total + " submissions") : "";
+  if (subs.length) {
+    tbody.innerHTML = subs.map(sub => 
+      "<tr>" +
+        "<td><strong>" + escapeHtml(sub.task_title) + "</strong></td" +
+        "<td>" + formatDateTime(sub.submitted_at) + "</td>" +
+        "<td>" + (sub.score !== null && sub.score !== undefined ? "<strong>" + sub.score + "</strong>/100" : "<span class='text-muted'>-</span>") + "</td>" +
+        "<td><span class='badge " + getStatusClass(sub.review_status || "Pending") + "'>" + (sub.review_status || "Pending") + "</span></td" +
+        "<td>" + escapeHtml(sub.feedback || "-") + "</td>" +
+      "</tr>"
+    ).join("");
+  } else {
+    tbody.innerHTML = "<tr><td colspan='5'><div class='empty-state'><i class='fas fa-file-upload'></i><p>No submissions found</p></div></td></tr>";
+  }
+  if (pageEl) pageEl.innerHTML = renderPagination(pagInfo?.page || 1, pagInfo?.totalPages || 1, "function(p){subPage=getPagination(p,"+pagInfo?.totalPages+"||1,"+SUBS_PER_PAGE+");applySubFilters();}");
+}
+
+async function viewHistory() {
+  const reviews = await apiFetch("/task_reviews");
+  if (!reviews) return;
+  
+  if (reviews.length) {
+    $("#historyList").innerHTML = reviews.map(r => 
+      "<div style='padding:15px;border-bottom:1px solid var(--border)'>" +
+        "<div style='display:flex;justify-content:space-between;margin-bottom:10px'>" +
+          "<strong>" + escapeHtml(r.task_title) + "</strong>" +
+          "<span class='badge " + getStatusClass(r.status) + "'>" + r.status + "</span>" +
+        "</div>" +
+        "<p><strong>Score:</strong> " + r.score + "/100</p>" +
+        "<p><strong>Feedback:</strong> " + escapeHtml(r.feedback || "No feedback") + "</p>" +
+        "<small class='text-muted'>" + formatDateTime(r.reviewed_at) + "</small>" +
+      "</div>"
+    ).join("");
+  } else {
+    $("#historyList").innerHTML = "<div class='empty-state'><i class='fas fa-history'></i><p>No reviews yet</p></div>";
+  }
+  
+  $("#historyModal").style.display = "flex";
+}
+
+function closeHistoryModal() {
+  $("#historyModal").style.display = "none";
+}
+
+document.addEventListener("click", (e) => {
+  if (e.target.id === "historyModal") closeHistoryModal();
+});
+</script>
+
+<script>
+// Mobile table converter - transforms tables to card layout on small screens
+function makeTablesMobileResponsive(){
+  const isMobile=window.innerWidth<=640;
+  document.querySelectorAll('table').forEach(table=>{
+    const wrapper=table.parentElement;
+    if(!wrapper.classList.contains('table-responsive'))return;
+    if(isMobile){
+      if(!table.classList.contains('mobile-converted')){
+        table.querySelectorAll('tr').forEach(tr=>{
+          tr.querySelectorAll('td').forEach((td,i)=>{
+            const th=table.querySelector('thead th:nth-child('+(i+1)+')');
+            const label=th?th.textContent.trim():'Cell '+(i+1);
+            td.setAttribute('data-label',label);
+          });
+        });
+        table.classList.add('mobile-converted');
+      }
+    }else{
+      table.querySelectorAll('[data-label]').forEach(td=>td.removeAttribute('data-label'));
+      table.classList.remove('mobile-converted');
+    }
+  });
+}
+window.addEventListener('load',makeTablesMobileResponsive);
+window.addEventListener('resize',()=>{clearTimeout(window._tblTimeout);window._tblTimeout=setTimeout(makeTablesMobileResponsive,150)});
+</script>
+
+<script>
+(function(){
+  function convertTables(){
+    var isMobile=window.innerWidth<=640;
+    document.querySelectorAll('table').forEach(function(table){
+      var wrapper=table.parentElement;
+      if(!wrapper||!wrapper.classList.contains('table-responsive'))return;
+      table.querySelectorAll('tr').forEach(function(tr){
+        tr.querySelectorAll('td').forEach(function(td,i){
+          var th=table.querySelector('thead th:nth-child('+(i+1)+')');
+          var label=th?th.textContent.trim():'Cell '+(i+1);
+          if(isMobile){td.setAttribute('data-label',label)}
+          else{td.removeAttribute('data-label')}
+        });
+      });
+    });
+  }
+  convertTables();
+  window.addEventListener('resize',function(){clearTimeout(window._rt);window._rt=setTimeout(convertTables,200)});
+})();
+</script>
+</body>
+</html>

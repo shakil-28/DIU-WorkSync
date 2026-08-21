@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Project Discussions - Teacher</title>
+<link rel="stylesheet" href="/css/style.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+<style>
+.comment-item { padding:12px; background:var(--bg); border-radius:8px; margin-bottom:8px; border:1px solid var(--border); }
+.comment-item .author { font-weight:600; font-size:13px; }
+.comment-item .author .role { font-size:11px; padding:2px 8px; border-radius:10px; margin-left:6px; }
+.comment-item .role-teacher { background:#fef3c7; color:#92400e; }
+.comment-item .role-student { background:#dbeafe; color:#1e40af; }
+.comment-item .time { font-size:11px; color:var(--muted); }
+.comment-item .body { font-size:13px; color:var(--text); margin-top:6px; }
+.project-group { margin-bottom:24px; }
+.project-group h4 { margin:0 0 10px 0; font-size:15px; display:flex; align-items:center; gap:8px; }
+.project-group h4 .badge { font-size:11px; font-weight:400; }
+</style>
+</head>
+<body>
+<div class="app-layout">
+<header class="topbar">
+<div class="topbar-left"><button class="hamburger" id="hamburgerBtn"><i class="fas fa-bars"></i></button><a href="../../index.html" class="logo">DIU WorkSync</a></div>
+<div class="topbar-right">
+<button class="theme-toggle" id="themeToggle"><i class="fas fa-moon"></i></button>
+<div class="user-info"><i class="fas fa-user-circle"></i><span id="userName"></span><span id="roleBadge" class="role-badge role-teacher">Teacher</span></div>
+<button class="logout-btn" onclick="Session.logout()"><i class="fas fa-sign-out-alt"></i></button>
+</div>
+</header>
+<div class="sidebar-overlay" id="sidebarOverlay"></div>
+<aside class="sidebar" id="sidebar">
+<nav class="sidebar-nav">
+<div class="nav-section">Main</div>
+<a href="dashboard.html" class="nav-link"><i class="fas fa-tachometer-alt"></i> Dashboard</a>
+<a href="courses.html" class="nav-link"><i class="fas fa-book"></i> Courses</a>
+<a href="projects.html" class="nav-link"><i class="fas fa-project-diagram"></i> Projects</a>
+<a href="tasks.html" class="nav-link"><i class="fas fa-tasks"></i> Tasks</a>
+<div class="nav-section">Management</div>
+<a href="submissions.html" class="nav-link"><i class="fas fa-file-upload"></i> Submissions</a>
+<a href="reports.html" class="nav-link"><i class="fas fa-chart-bar"></i> Reports</a>
+<a href="announcements.html" class="nav-link"><i class="fas fa-bullhorn"></i> Announcements</a>
+<a href="peer-reviews.html" class="nav-link"><i class="fas fa-users"></i> Peer Reviews</a>
+<div class="nav-divider"></div>
+<a href="project-discussion.html" class="nav-link active"><i class="fas fa-comments"></i> Discussions</a>
+<a href="#" class="nav-link logout" onclick="Session.logout()"><i class="fas fa-sign-out-alt"></i> Logout</a>
+</nav>
+</aside>
+<main class="main-content">
+<div class="card">
+<div class="card-header"><i class="fas fa-comments"></i> All Project Discussions</div>
+<div id="discussionContent"><div class="empty-state"><i class="fas fa-spinner fa-spin"></i><p>Loading...</p></div></div>
+</div>
+</main>
+<footer class="main-footer">&copy; 2026 DIU WorkSync</footer>
+</div>
+<script src="/js/app.js"></script>
+<script>
+requireAuth(); requireRole("teacher");
+const s = Session.get();
+$("#userName").textContent = s.name;
+
+(async function loadAll() {
+  const [projects, allComments] = await Promise.all([
+    apiFetch("/projects"),
+    apiFetch("/comments/all")
+  ]);
+  const el = $("#discussionContent");
+  if (!projects?.length) { el.innerHTML = "<div class='empty-state'><i class='fas fa-project-diagram'></i><p>No projects yet</p></div>"; return; }
+
+  let html = "";
+  for (const p of projects) {
+    const pComments = (allComments || []).filter(c => c.project_id == p.id);
+    html += "<div class='project-group'><h4><i class='fas fa-project-diagram'></i> " + escapeHtml(p.title) + " <span class='badge badge-info'>" + (p.group_name || "Group") + "</span></h4>";
+    if (!pComments.length) {
+      html += "<div style='padding:12px;color:var(--muted);font-size:13px'><i class='fas fa-comment-slash'></i> No discussions yet</div>";
+    } else {
+      html += pComments.map(c => "<div class='comment-item'>" +
+        "<div><span class='author'>" + escapeHtml(c.name) + " <span class='role role-" + c.role + "'>" + (c.role === "teacher" ? "Teacher" : "Student") + "</span></span> <span class='time'>" + formatDateTime(c.created_at) + "</span></div>" +
+        "<div class='body'>" + escapeHtml(c.message) + "</div>" +
+      "</div>").join("");
+    }
+    html += "</div>";
+  }
+  el.innerHTML = html;
+})();
+</script>
+</body>
+</html>

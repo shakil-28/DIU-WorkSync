@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Reports - Teacher</title>
+<link rel="stylesheet" href="/css/style.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+<style>
+.contrib-card { background:var(--card); border-radius:12px; padding:20px; margin-bottom:20px; border:1px solid var(--border); }
+.contrib-card h3 { margin:0 0 16px 0; font-size:16px; display:flex; align-items:center; gap:8px; }
+.contrib-member { display:flex; align-items:center; gap:12px; padding:10px 0; border-bottom:1px solid var(--border); }
+.contrib-member:last-child { border-bottom:none; }
+.contrib-member .name { flex:1; font-weight:500; }
+.contrib-member .weight { color:var(--muted); font-size:13px; }
+.contrib-member .score { font-weight:600; color:var(--primary); }
+.contrib-member .final { font-weight:700; font-size:16px; color:#2e7d32; }
+.contrib-input { width:60px; padding:4px 8px; border:1px solid var(--border); border-radius:6px; text-align:center; font-size:14px; }
+.btn-override { padding:4px 10px; border-radius:6px; border:none; background:var(--primary); color:#fff; cursor:pointer; font-size:12px; }
+.btn-override:hover { opacity:0.9; }
+.formula-box { background:#f8f9fa; border-radius:8px; padding:14px; margin-bottom:16px; font-size:13px; color:#555; }
+.formula-box strong { color:var(--primary); }
+.history-item { padding:8px 0; border-bottom:1px solid var(--border); font-size:13px; }
+.history-item:last-child { border-bottom:none; }
+.history-item .time { color:var(--muted); font-size:11px; }
+</style>
+</head>
+<body>
+<div class="app-layout">
+<header class="topbar">
+<div class="topbar-left"><button class="hamburger" id="hamburgerBtn"><i class="fas fa-bars"></i></button><a href="../../index.html" class="logo">DIU WorkSync</a></div>
+<div class="topbar-right">
+<button class="theme-toggle" id="themeToggle"><i class="fas fa-moon"></i></button>
+<div class="user-info"><i class="fas fa-user-circle"></i><span id="userName"></span><span id="roleBadge" class="role-badge role-teacher">Teacher</span></div>
+<button class="logout-btn" onclick="Session.logout()"><i class="fas fa-sign-out-alt"></i></button>
+</div>
+</header>
+<div class="sidebar-overlay" id="sidebarOverlay"></div>
+<aside class="sidebar" id="sidebar">
+<nav class="sidebar-nav">
+<div class="nav-section">Main</div>
+<a href="dashboard.html" class="nav-link"><i class="fas fa-tachometer-alt"></i> Dashboard</a>
+<a href="courses.html" class="nav-link"><i class="fas fa-book"></i> Courses</a>
+<a href="projects.html" class="nav-link"><i class="fas fa-project-diagram"></i> Projects</a>
+<a href="tasks.html" class="nav-link"><i class="fas fa-tasks"></i> Tasks</a>
+<div class="nav-section">Management</div>
+<a href="submissions.html" class="nav-link"><i class="fas fa-file-upload"></i> Submissions</a>
+<a href="reports.html" class="nav-link active"><i class="fas fa-chart-bar"></i> Reports</a>
+<a href="announcements.html" class="nav-link"><i class="fas fa-bullhorn"></i> Announcements</a>
+<div class="nav-divider"></div>
+<a href="activity.html" class="nav-link"><i class="fas fa-history"></i> Activity Log</a>
+<a href="#" class="nav-link logout" onclick="Session.logout()"><i class="fas fa-sign-out-alt"></i> Logout</a>
+</nav>
+</aside>
+<main class="main-content">
+<div class="card">
+<div class="card-header">Class Reports</div>
+<div class="stats-grid">
+<div class="stat-card"><div class="stat-value" id="statTotal">0</div><div class="stat-label">Total Students</div></div>
+<div class="stat-card green"><div class="stat-value" id="statCompleted">0</div><div class="stat-label">Completed Tasks</div></div>
+<div class="stat-card orange"><div class="stat-value" id="statPending">0</div><div class="stat-label">Pending Reviews</div></div>
+<div class="stat-card red"><div class="stat-value" id="statAvg">0%</div><div class="stat-label">Avg Completion</div></div>
+</div>
+</div>
+
+<div class="card">
+<div class="card-header">Student Performance</div>
+<div class="table-responsive">
+<table>
+<tr><th>Student</th><th>Tasks Done</th><th>Pending</th><th>Avg Score</th><th>Status</th></tr>
+<tbody id="reportTable"></tbody>
+</table>
+</div>
+</div>
+
+<div class="contrib-card">
+<h3><i class="fas fa-calculator"></i> Contribution Calculation Formula</h3>
+<div class="formula-box">
+<strong>Formula:</strong><br>
+Final Contribution Score = Weight % × (Average Review Score / 100) × 100<br><br>
+<strong>Example:</strong> If a student has 30% weight and average score of 80 → 30 × (80/100) × 100 = <strong>2400</strong> → normalized to <strong>24.0</strong> out of 100<br><br>
+<strong>Simplified:</strong> Final Score = Weight % × Average Score (capped at 100)
+</div>
+</div>
+
+<div class="contrib-card">
+<h3><i class="fas fa-users"></i> Project Contribution Breakdown</h3>
+<div id="contribContent">
+<div class="empty-state"><i class="fas fa-chart-pie"></i><p>Select a project above to view contributions</p></div>
+</div>
+</div>
+
+<div class="contrib-card" id="historyCard" style="display:none">
+<h3><i class="fas fa-history"></i> Override History</h3>
+<div id="historyContent"></div>
+</div>
+</main>
+<footer class="main-footer">&copy; 2026 DIU WorkSync</footer>
+</div>
+<script src="/js/app.js">// Event delegation for data-* buttons
+document.addEventListener("click", function(e) {
+  const btn = e.target.closest("[data-override-weight]");
+  if (btn) {
+    const [projectId, studentId, oldWeight] = btn.dataset.overrideWeight.split("|");
+    overrideWeight(projectId, studentId, oldWeight);
+  }
+});
+</script>
+<script>
+requireAuth(); requireRole("teacher");
+const s = Session.get();
+$("#userName").textContent = s.name;
+
+let allProjects = [];
+let allCourses = [];
+let allMembers = {};
+
+(async function loadData() {
+  const [courses, tasks, subs] = await Promise.all([
+    apiFetch("/courses"),
+    apiFetch("/tasks"),
+    apiFetch("/submissions"),
+  ]);
+  if (!courses) return;
+  allCourses = courses;
+
+  const allTasks = tasks || [];
+  const allSubs = subs || [];
+  const completed = allSubs.filter(sub => sub.status === "Completed").length;
+  const pending = allSubs.filter(sub => sub.review_status === "Pending").length;
+  const avgScore = allSubs.filter(sub => sub.score).reduce((a, b) => a + (b.score || 0), 0) / (allSubs.filter(sub => sub.score).length || 1);
+
+  $("#statTotal").textContent = "—";
+  $("#statCompleted").textContent = completed;
+  $("#statPending").textContent = pending;
+  $("#statAvg").textContent = Math.round(avgScore) + "%";
+
+  const students = await apiFetch("/users");
+  const tbody = $("#reportTable");
+  if (students?.length) {
+    tbody.innerHTML = students.map(st => {
+      const stSubs = allSubs.filter(sub => sub.student_id === st.id);
+      const stDone = stSubs.filter(sub => sub.status === "Completed").length;
+      const stPending = stSubs.filter(sub => sub.review_status === "Pending").length;
+      const stAvg = stSubs.filter(sub => sub.score).length ? Math.round(stSubs.filter(sub => sub.score).reduce((a, b) => a + b.score, 0) / stSubs.filter(sub => sub.score).length) : 0;
+      return "<tr><td><strong>" + escapeHtml(st.name) + "</strong></td><td>" + stDone + "</td><td>" + stPending + "</td><td>" + stAvg + "%</td><td><span class='badge " + getStatusClass(stDone > 0 ? "In Progress" : "Not Started") + "'>" + (stDone > 0 ? "Active" : "Inactive") + "</span></td></tr>";
+    }).join("");
+  } else {
+    tbody.innerHTML = "<tr><td colspan='5'><div class='empty-state'><i class='fas fa-chart-bar'></i><p>No students found</p></div></td></tr>";
+  }
+
+  renderProjectSelector(courses); loadExportHistory();
+})();
+
+
+let selectedProjectId = null;
+let selectedProjectName = "";
+
+function showExportModal() {
+  if (!selectedProjectId) { alert("Please select a project first."); return; }
+  $("#exportModal").style.display = "flex";
+  $("#exportPreview").innerHTML = "<strong>Project:</strong> " + escapeHtml(selectedProjectName) + "<br><strong>Course:</strong> " + escapeHtml(allCourses.find(c=>c.id==selectedProjectId)?.course_code || "");
+}
+
+function closeExportModal() {
+  $("#exportModal").style.display = "none";
+}
+
+async function generateReport() {
+  const type = $("#exportType").value;
+  const btn = event.target;
+  btn.disabled = true;
+  btn.innerHTML = "<i class='fas fa-spinner fa-spin'></i> Generating...";
+  const r = await apiFetch("/reports/export", { method: "POST", body: JSON.stringify({ project_id: selectedProjectId, report_type: type }) });
+  btn.disabled = false;
+  btn.innerHTML = "<i class='fas fa-cog'></i> Generate & Print";
+  if (!r) { alert("Failed to generate report"); return; }
+  closeExportModal();
+  const w = window.open("", "_blank");
+  w.document.write(r.html);
+  w.document.close();
+  setTimeout(() => { w.print(); }, 400);
+  loadExportHistory();
+}
+
+function renderProjectSelector(courses) {
+  let html = "<div style='margin-bottom:16px'><select class='form-control' id='projectSelect' onchange='loadProjectContrib(this.value)' style='max-width:400px'>";
+  html += "<option value=''>-- Select Course & Project --</option>";
+  courses.forEach(c => {
+    html += "<optgroup label='" + escapeHtml(c.course_name) + " (" + escapeHtml(c.course_code) + ")'>";
+    html += "<option value='__COURSE__" + c.id + "'>📁 " + escapeHtml(c.course_name) + "</option>";
+    html += "</optgroup>";
+  });
+  html += "</select></div>";
+  $("#contribContent").prepend(html);
+}
+
+async function loadProjectContrib(val) {
+  if (!val || val.startsWith("__COURSE__")) return;
+  selectedProjectId = val;
+  const courseId = val;
+  const projects = allCourses.filter(c => c.id == courseId);
+  if (projects.length) {
+    const c = projects[0];
+    const members = await apiFetch("/contributions/" + c.id);
+    if (members) {
+      allMembers[c.id] = members;
+      renderContributions(c.id, members);
+      loadHistory(c.id);
+    }
+  }
+}
+
+function renderContributions(projectId, members) {
+  const el = $("#contribContent");
+  const project = allCourses.find(c => c.id == projectId);
+  if (!members?.length) {
+    el.innerHTML = "<div class='empty-state'><i class='fas fa-users'></i><p>No members in this project</p></div>";
+    return;
+  }
+  const totalWeight = members.reduce((s, m) => s + m.weight_percent, 0);
+  let html = "<p style='color:var(--muted);font-size:13px;margin-bottom:12px'><strong>Project:</strong> " + escapeHtml(project?.course_name || projectId) + " | Total Weight: " + totalWeight + "%</p>";
+  html += "<table><tr><th>Member</th><th>Weight %</th><th>Avg Score</th><th>Final Score</th><th>Status</th><th>Override</th></tr>";
+  members.forEach(m => {
+    const finalScore = Math.min(100, Math.round(m.weight_percent * (m.score || 0) / 100));
+    html += "<tr>" +
+      "<td><strong>" + escapeHtml(m.name) + "</strong></td>" +
+      "<td><input type='number' class='contrib-input' id='weight_" + m.id + "' value=" + m.weight_percent + " min='0' max='100'></td>" +
+      "<td>" + (m.score || 0) + "</td>" +
+      "<td class='final'>" + finalScore + "</td>" +
+      "<td><span class='badge " + getStatusClass(m.review_status) + "'>" + m.review_status + "</span></td>" +
+      `<td><button class='btn-override' data-override-weight="${projectId}|${m.id}|${m.weight_percent}"><i class='fas fa-edit'></i> Update</button></td>` +
+    "</tr>";
+  });
+  html += "</table>";
+  // Keep the selector
+  const sel = $("#projectSelect");
+  el.innerHTML = html;
+  el.prepend(sel.outerHTML);
+}
+
+async function overrideWeight(projectId, studentId, oldWeight) {
+  const newWeight = parseInt($("#weight_" + studentId)?.value || oldWeight);
+  if (newWeight === oldWeight) return;
+  const reason = prompt("Enter reason for weight adjustment (optional):") || "";
+  if (!confirm("Change " + studentId + " weight from " + oldWeight + "% to " + newWeight + "%?")) return;
+
+  const ok = await apiFetch("/contributions/" + projectId + "/override", {
+    method: "PUT",
+    body: JSON.stringify({ student_id: studentId, new_weight: newWeight, reason })
+  });
+  if (ok?.success) {
+    const members = await apiFetch("/contributions/" + projectId);
+    if (members) {
+      allMembers[projectId] = members;
+      renderContributions(projectId, members);
+    }
+    alert("Weight updated successfully!");
+  } else {
+    alert("Failed to update weight");
+  }
+}
+
+async function loadHistory(projectId) {
+  const history = await apiFetch("/contributions/" + projectId + "/history");
+  if (!history?.length) {
+    $("#historyCard").style.display = "none";
+    return;
+  }
+  $("#historyCard").style.display = "block";
+  $("#historyContent").innerHTML = history.map(h =>
+    "<div class='history-item'><strong>" + escapeHtml(h.adjusted_by_name) + "</strong> changed weight: " + h.original_percent + "% → " + h.adjusted_percent + "%<br>" +
+    "<span class='time'>" + formatDateTime(h.adjusted_at) + "</span>" +
+    (h.reason ? "<br><em class='text-muted'>" + escapeHtml(h.reason) + "</em>" : "") +
+    "</div>"
+  ).join("");
+}
+// Event delegation for data-* buttons
+document.addEventListener("click", function(e) {
+  const btn = e.target.closest("[data-override-weight]");
+  if (btn) {
+    const [projectId, studentId, oldWeight] = btn.dataset.overrideWeight.split("|");
+    overrideWeight(projectId, studentId, oldWeight);
+  }
+});
+</script>
+
+<!-- Export Modal -->
+<div id="exportModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:2000;align-items:center;justify-content:center">
+<div class="card" style="max-width:520px;width:92%">
+<div class="card-header"><i class="fas fa-file-export"></i> Export Report</div>
+<div class="form-group"><label>Report Type</label>
+  <select class="form-control" id="exportType">
+    <option value="project">Project Report</option>
+    <option value="class">Class Summary</option>
+    <option value="student">Student Performance</option>
+  </select>
+</div>
+<div id="exportPreview" style="margin:12px 0;padding:12px;background:var(--bg);border-radius:8px;font-size:13px;color:var(--muted)"></div>
+<div style="display:flex;gap:10px;justify-content:flex-end">
+  <button class="btn btn-outline" onclick="closeExportModal()">Cancel</button>
+  <button class="btn btn-primary" onclick="generateReport()"><i class="fas fa-cog"></i> Generate & Print</button>
+</div>
+</div>
+</div>
+</body>
+</html>
