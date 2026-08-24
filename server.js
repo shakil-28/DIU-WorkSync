@@ -54,7 +54,7 @@ let courses = [], course_students = [], projects = [], project_members = [], tas
 function genId() { return Date.now() + Math.floor(Math.random() * 1000); }
 function hashPassword(p) { return crypto.createHash("sha256").update(p).digest("hex"); }
 function getSession(req) { const c = req.headers.cookie; if (!c) return null; const m = c.match(/session=([^;]+)/); if (!m) return null; try { return JSON.parse(Buffer.from(m[1], "base64").toString()); } catch { return null; } }
-function setSession(res, uid, name, role) { const s = Buffer.from(JSON.stringify({ userId: uid, name, role, ts: Date.now() })).toString("base64"); res.setHeader("Set-Cookie", "session=" + s + "; Path=/; HttpOnly"); }
+function setSession(res, uid, name, role) { const s = Buffer.from(JSON.stringify({ userId: uid, name, role, ts: Date.now() })).toString("base64"); res.setHeader("Set-Cookie", "session=" + s + "; Path=/; HttpOnly; SameSite=Lax"); }
 function clearSession(res) { res.setHeader("Set-Cookie", "session=; Path=/; Max-Age=0"); }
 function sendJson(res, data, status = 200) { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(data)); }
 function sendHtml(res, file) { const p = path.join(PUBLIC_DIR, file); res.writeHead(200, { "Content-Type": "text/html" }); fs.createReadStream(p).pipe(res); }
@@ -297,7 +297,7 @@ const server = http.createServer(async (req, res) => {
     if (pathname === "/api/tasks" && method === "GET") {
       if (dbMode === "mysql") {
         if (sess.role === "teacher") { const t = await dbQuery("SELECT t.*, c.course_code FROM tasks t JOIN courses c ON t.course_id=c.id WHERE t.teacher_id=? ORDER BY t.created_at DESC", [sess.userId]); return sendJson(res, t); }
-        const t = await dbQuery("SELECT ta.*, t.title, t.type, t.priority, t.description, p.title as project_name, c.course_code FROM task_assignments ta JOIN tasks t ON ta.task_id=t.id JOIN projects p ON ta.project_id=p.id JOIN courses c ON p.course_id=c.id JOIN course_students cs ON c.id=cs.course_id WHERE cs.student_id=? ORDER BY ta.deadline ASC", [sess.userId]); return sendJson(res, t);
+        const t = await dbQuery("SELECT ta.*, t.title, t.type, t.priority, t.description, p.title as project_name, c.course_code FROM task_assignments ta JOIN tasks t ON ta.task_id=t.id JOIN courses c ON t.course_id=c.id LEFT JOIN projects p ON ta.project_id=p.id WHERE ta.student_id=? ORDER BY ta.deadline ASC", [sess.userId]); return sendJson(res, t);
       }
       if (sess.role === "teacher") return sendJson(res, tasks.filter(t => t.teacher_id === sess.userId));
       return sendJson(res, task_assignments.filter(ta => ta.student_id === sess.userId));
@@ -312,20 +312,13 @@ const server = http.createServer(async (req, res) => {
     }
 
     // Tasks/assign: POST
-    if (pathname === "/api/tasks/assign" && method === "POST" && sess.role === "teacher") { console.log("[server] /api/tasks/assign POST", json);
+    if (pathname === "/api/tasks/assign" && method === "POST" && sess.role === "teacher") {
       const { task_id, student_id, weight_percent, deadline, project_id } = json;
       if (isNaN(task_id) || task_id < 1) return sendJson(res, { error: "Invalid task_id" }, 400);
       if (isNaN(student_id) || student_id < 1) return sendJson(res, { error: "Invalid student_id" }, 400);
       try {
         if (dbMode === "mysql") {
-      try {
           await dbQuery("INSERT INTO task_assignments (task_id, student_id, weight_percent, deadline, project_id, status) VALUES (?, ?, ?, ?, ?, 'Not Started')", [parseInt(task_id), parseInt(student_id), parseInt(weight_percent) || 0, deadline || null, project_id ? parseInt(project_id) : null]);
-        console.log("[server] Assignment inserted: task=" + task_id + " student=" + student_id);
-      } catch(dbErr) {
-        console.error("[server] Assignment INSERT error:", dbErr.message);
-        return sendJson(res, { error: dbErr.message }, 500);
-      }
-          console.log("[server] Assignment inserted: task=" + task_id + " student=" + student_id);
         } else {
           task_assignments.push({ id: genId(), task_id, student_id, weight_percent: weight_percent || 0, deadline: deadline || null, project_id: project_id || null, status: 'Not Started' });
         }
@@ -338,7 +331,6 @@ const server = http.createServer(async (req, res) => {
 
     // Tasks/assign: GET
     if (pathname === "/api/tasks/assign" && method === "GET") {
-      if (dbMode === "mysql") { const tas = await dbQuery("SELECT ta.*, t.title as task_title, u.name as student_name FROM task_assignments ta JOIN tasks t ON ta.task_id=t.id JOIN users u ON ta.student_id=u.id ORDER BY ta.created_at DESC"); console.log("[server] /api/tasks/assign GET:", JSON.stringify(tas.map(a => ({id: a.id, task_id: a.task_id, student_id: a.student_id, student_name: a.student_name})))); return sendJson(res, tas); }
       return sendJson(res, task_assignments);
     }
 
@@ -498,7 +490,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     // Deadlines: check overdue
-    if (pathname === "/api/deadlines/check" && method === "POST" && sess.role === "teacher") {
+    if (pathname === "/api/deadlines/check" && method === "POST") {
       if (dbMode === "mysql") {
         const now = new Date().toISOString().split("T")[0];
         const overdueTasks = await dbQuery("SELECT id, title FROM tasks WHERE deadline < ? AND status != 'Completed' AND status != 'Overdue'", [now]);
@@ -516,7 +508,10 @@ const server = http.createServer(async (req, res) => {
         const now = new Date().toISOString().split("T")[0];
         const weekLater = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
         if (sess.role === "teacher") { const d = await dbQuery("SELECT t.id, t.title, t.deadline, t.priority, c.course_code FROM tasks t JOIN courses c ON t.course_id=c.id WHERE t.deadline BETWEEN ? AND ? AND t.status != 'Completed' ORDER BY t.deadline ASC", [now, weekLater]); return sendJson(res, d); }
-        else { const d = await dbQuery("SELECT ta.id, ta.task_id, t.title, t.deadline, t.priority, ta.weight_percent, c.course_code FROM task_assignments ta JOIN tasks t ON ta.task_id=t.id JOIN projects p ON ta.project_id=p.id JOIN courses c ON p.course_id=c.id JOIN course_students cs ON c.id=cs.course_id WHERE ta.deadline BETWEEN ? AND ? AND ta.status != 'Completed' AND cs.student_id=? ORDER BY ta.deadline ASC", [now, weekLater, sess.userId]); return sendJson(res, d); }
+        else {
+          const allAssigns = await dbQuery("SELECT ta.id, ta.task_id, ta.deadline, ta.status FROM task_assignments ta WHERE ta.student_id=?", [sess.userId]);
+          const d = await dbQuery("SELECT ta.id, ta.task_id, t.title, t.deadline, t.priority, ta.weight_percent, c.course_code FROM task_assignments ta JOIN tasks t ON ta.task_id=t.id JOIN courses c ON t.course_id=c.id LEFT JOIN projects p ON ta.project_id=p.id WHERE ta.student_id=? AND ta.deadline BETWEEN ? AND ? AND ta.status != 'Completed' ORDER BY ta.deadline ASC", [sess.userId, now, weekLater]);
+        }
       }
       return sendJson(res, []);
     }
@@ -575,7 +570,6 @@ const server = http.createServer(async (req, res) => {
         if (sess.role === "teacher") { const r = await dbQuery("SELECT pr.*, u.name as reviewer_name, r2.name as reviewed_name FROM peer_reviews pr JOIN users u ON pr.reviewer_id=u.id JOIN users r2 ON pr.reviewed_student_id=r2.id WHERE pr.project_id=? ORDER BY pr.submitted_at DESC", [projectId]); return sendJson(res, r); }
         else { const r = await dbQuery("SELECT pr.*, u.name as reviewer_name, r2.name as reviewed_name FROM peer_reviews pr JOIN users u ON pr.reviewer_id=u.id JOIN users r2 ON pr.reviewed_student_id=r2.id WHERE pr.project_id=? AND (pr.reviewer_id=? OR pr.reviewed_student_id=?) ORDER BY pr.submitted_at DESC", [projectId, sess.userId, sess.userId]); return sendJson(res, r); }
       }
-      return sendJson(res, []);
     }
 
     // Peer Reviews: Summary

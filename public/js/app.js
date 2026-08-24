@@ -12,14 +12,9 @@ const Session = {
         credentials: "include",
       });
       const data = await r.json();
-      if (r.ok) {
-        localStorage.setItem("ws_user", JSON.stringify(data));
-        return { success: true, user: data };
-      }
+      if (r.ok) { localStorage.setItem("ws_user", JSON.stringify(data)); return { success: true, user: data }; }
       return { success: false, error: data.error };
-    } catch (e) {
-      return { success: false, error: e.message };
-    }
+    } catch (e) { return { success: false, error: e.message }; }
   },
   async register(name, email, password, role) {
     try {
@@ -30,36 +25,40 @@ const Session = {
         credentials: "include",
       });
       const data = await r.json();
-      if (r.ok) {
-        return { success: true, user: data };
-      }
+      if (r.ok) return { success: true, user: data };
       return { success: false, error: data.error };
-    } catch (e) {
-      return { success: false, error: e.message };
-    }
+    } catch (e) { return { success: false, error: e.message }; }
   },
   async logout() {
-    try { await fetch(API + "/auth/logout", { method: "POST", credentials: "include" }); } catch (e) {}
-    localStorage.removeItem("ws_user");
+    localStorage.removeItem("ws_user"); await fetch(API + "/auth/logout", { method: "POST", credentials: "include" }).catch(() => {});
     window.location.href = "/index.html";
   },
-  get() { return JSON.parse(localStorage.getItem("ws_user") || "null"); },
+  get() {
+    // Try localStorage first (most reliable), then cookie fallback
+    const local = localStorage.getItem("ws_user");
+    if (local) { try { return JSON.parse(local); } catch {} }
+    const m = document.cookie.match(/(?:^|; )session=([^;]*)/);
+    if (m) { try { return JSON.parse(Buffer.from(m[1], "base64").toString()); } catch {} }
+    return null;
+  },
   isAuthenticated() { return !!this.get(); },
-  isTeacher() { return this.get()?.role === "teacher"; },
-  isStudent() { return this.get()?.role === "student"; },
+  isTeacher() { const s = this.get(); return s?.role === "teacher"; },
+  isStudent() { const s = this.get(); return s?.role === "student"; },
   async refresh() {
     try {
       const r = await fetch(API + "/auth/me", { credentials: "include" });
-      if (r.ok) { const data = await r.json(); localStorage.setItem("ws_user", JSON.stringify(data)); return data; }
+      if (r.ok) { const d = await r.json(); localStorage.setItem("ws_user", JSON.stringify(d)); return d; }
     } catch (e) {}
     return null;
   },
 };
 
+
+
 async function apiFetch(endpoint, options = {}) {
   const opts = { ...options, headers: { "Content-Type": "application/json", ...(options.headers || {}) }, credentials: "include" };
   const r = await fetch(API + endpoint, opts);
-  if (r.status === 401) { localStorage.removeItem("ws_user"); window.location.href = "/index.html"; return null; }
+  if (r.status === 401) { window.location.href = "/index.html"; return null; }
   return r.json();
 }
 

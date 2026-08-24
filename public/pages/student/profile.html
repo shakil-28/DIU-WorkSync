@@ -120,7 +120,7 @@ async function saveProfile(e) {
   const r = await apiFetch("/users/profile", { method: "PUT", body: JSON.stringify({ name, phone, github }) });
   if (r?.success) {
     s.name = name;
-    localStorage.setItem("ws_user", JSON.stringify(s));
+    );
     $("#userName").textContent = name;
     $("#avatarCircle").textContent = name[0].toUpperCase();
     showNotif("Profile updated!", "success");

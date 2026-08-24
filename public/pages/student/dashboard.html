@@ -106,6 +106,7 @@ $("#welcomeName").textContent = s.name;
   ]);
   
   const today = new Date().toISOString().split("T")[0];
+  const today2 = today;
   const todayTasks = tasks?.filter(t => t.deadline === today) || [];
   $("#todayCount").textContent = todayTasks.length;
   
@@ -117,19 +118,21 @@ $("#welcomeName").textContent = s.name;
     $("#todayList").innerHTML = "<div style='padding:20px;text-align:center;color:var(--muted)'><i class='fas fa-check-circle' style='font-size:24px;margin-bottom:8px;display:block'></i>No tasks due today</div>";
   }
   
-  if (!courses) return;
+  if (!courses) {}
   $("#statCourses").textContent = courses.length;
   $("#statProjects").textContent = projects?.filter(p => p.status === "Active").length || 0;
   $("#statTasks").textContent = tasks?.length || 0;
-  $("#statOverdue").textContent = tasks?.filter(t => t.status === "Overdue").length || 0;
+  $("#statOverdue").textContent = (tasks||[]).filter(t => t.deadline && t.deadline < today2 && t.status !== "Completed").length || 0;
 
-  const overdue = tasks?.filter(t => t.status === "Overdue") || [];
+  const overdue = (tasks||[]).filter(t => t.deadline && t.deadline < today2 && t.status !== "Completed");
   if (overdue.length) {
     $("#overdueList").innerHTML = "<ul class='task-list'>" + overdue.slice(0,5).map(t =>
       "<li><div class='task-info'><strong>" + escapeHtml(t.title) + "</strong><small>" + escapeHtml(t.course_code) + " | Due: " + formatDate(t.deadline) + "</small></div><span class='badge badge-overdue'>Overdue</span></li>"
     ).join("") + "</ul>";
   }
 
+  // Auto-check overdue
+  await fetch("/api/deadlines/check", { method: "POST", headers: { "Content-Type": "application/json" } });
   const upcoming = await apiFetch("/deadlines/upcoming");
   if (upcoming?.length) {
     $("#upcomingList").innerHTML = "<ul class='task-list'>" + upcoming.slice(0, 5).map(d => {
@@ -186,7 +189,7 @@ function renderCharts(courses, tasks, projects) {
 
   // 2. Pie Chart - Task Status
   const statusCounts = { 'Not Started': 0, 'In Progress': 0, 'Completed': 0, 'Overdue': 0 };
-  (tasks || []).forEach(t => { if (statusCounts[t.status] !== undefined) statusCounts[t.status]++; });
+  (tasks || []).forEach(t => { const s = t.status === 'Active' ? 'In Progress' : t.status === 'Pending' ? 'Not Started' : t.status; if (statusCounts[s] !== undefined) statusCounts[s]++; });
   new Chart(document.getElementById('pieChart'), {
     type: 'pie',
     data: {
