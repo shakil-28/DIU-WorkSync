@@ -100,13 +100,13 @@ function renderTasks(tasks, pagInfo) {
   if (tasks.length) {
     tbody.innerHTML = tasks.map(t =>
       "<tr class='priority-row-" + (t.priority||"medium").toLowerCase() + "'>" +
-        "<td><strong>" + escapeHtml(t.title) + "</strong></td" +
+        "<td><strong>" + escapeHtml(t.title) + "</strong></td>" +
         "<td>" + escapeHtml(t.type || "-") + "</td>" +
         "<td>" + escapeHtml(t.course_code) + "</td>" +
         "<td>" + escapeHtml(t.project_name || "-") + "</td>" +
-        "<td><strong>" + (t.weight_percent || 0) + "%</strong></td" +
+        "<td><strong>" + (t.weight_percent || 0) + "%</strong></td>" +
         "<td>" + formatDate(t.deadline) + "</td>" +
-        "<td><span class='badge " + getStatusClass(t.status) + "'>" + t.status + "</span></td" +
+        "<td><span class='badge " + getStatusClass(t.status) + "'>" + t.status + "</span></td>" +
         "<td>" + (t.status !== "Completed" ? "<a href='/pages/student/submit-task.html?id=" + t.id + "' class='btn btn-sm btn-primary'>Submit</a>" : "<span style='color:var(--secondary)'><i class='fas fa-check'></i> Done</span>") + "</td>" +
       "</tr>"
     ).join("");

@@ -270,6 +270,22 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, sess.role === "teacher" ? projects : projects.filter(p => p.course_id));
     }
 
+    // Occupied students: GET
+    if (pathname === "/api/occupied-students" && method === "GET") {
+      if (dbMode === "mysql") {
+        const occupied = await dbQuery("SELECT DISTINCT student_id FROM project_members pm JOIN projects p ON pm.project_id=p.id WHERE p.teacher_id=?", [sess.userId]);
+        const occupiedTask = await dbQuery("SELECT DISTINCT student_id FROM task_assignments ta JOIN tasks t ON ta.task_id=t.id WHERE t.teacher_id=? AND ta.status NOT IN ('Completed', 'Overdue')", [sess.userId]);
+        const ids = new Set();
+        (occupied || []).forEach(r => ids.add(r.student_id));
+        (occupiedTask || []).forEach(r => ids.add(r.student_id));
+        return sendJson(res, Array.from(ids));
+      }
+      const ids = new Set();
+      project_members.forEach(pm => { const p = projects.find(x => x.id == pm.project_id && x.teacher_id == sess.userId); if (p) ids.add(pm.student_id); });
+      task_assignments.forEach(ta => { const t = tasks.find(x => x.id == ta.task_id && x.teacher_id == sess.userId); if (t && ta.status !== "Completed" && ta.status !== "Overdue") ids.add(ta.student_id); });
+      return sendJson(res, Array.from(ids));
+    }
+
     // Projects: POST
     if (pathname === "/api/projects" && method === "POST" && sess.role === "teacher") {
       const p = { id: genId(), title: json.title, description: json.description, course_id: json.course_id, teacher_id: sess.userId, status: "Active", group_name: json.group_name || "Group" };
@@ -281,8 +297,21 @@ const server = http.createServer(async (req, res) => {
     // Project members: POST
     if (pathname.startsWith("/api/projects/") && pathname.endsWith("/members") && method === "POST" && sess.role === "teacher") {
       const projectId = pathname.split("/")[3];
-      if (dbMode === "mysql") { for (const m of json.members) { await dbQuery("INSERT INTO project_members (project_id, student_id, role) VALUES (?, ?, ?)", [projectId, m.student_id, m.isLeader ? "Leader" : "Member"]); } }
-      else { for (const m of json.members) { if (!project_members.find(pm => pm.project_id == projectId && pm.student_id == m.student_id)) project_members.push({ project_id: projectId, student_id: m.student_id, role: m.isLeader ? "Leader" : "Member" }); } }
+      const errors = [];
+      if (dbMode === "mysql") {
+        for (const m of json.members) {
+          const existing = await dbQuery("SELECT p.id, p.title FROM project_members pm JOIN projects p ON pm.project_id=p.id WHERE pm.student_id=? AND p.teacher_id=? AND pm.project_id!=?", [m.student_id, sess.userId, projectId]);
+          if (existing && existing.length) { errors.push({ student_id: m.student_id, error: "Already in project: " + existing[0].title }); continue; }
+          await dbQuery("INSERT INTO project_members (project_id, student_id, role) VALUES (?, ?, ?)", [projectId, m.student_id, m.isLeader ? "Leader" : "Member"]);
+        }
+      } else {
+        for (const m of json.members) {
+          const existing = project_members.find(pm => pm.student_id == m.student_id && projects.find(p => p.id == pm.project_id && p.teacher_id == sess.userId && p.id != projectId));
+          if (existing) { errors.push({ student_id: m.student_id, error: "Already in project: " + (projects.find(p => p.id == existing.project_id)?.title || "unknown") }); continue; }
+          if (!project_members.find(pm => pm.project_id == projectId && pm.student_id == m.student_id)) project_members.push({ project_id: projectId, student_id: m.student_id, role: m.isLeader ? "Leader" : "Member" });
+        }
+      }
+      if (errors.length) return sendJson(res, { success: false, errors });
       return sendJson(res, { success: true });
     }
 
@@ -316,17 +345,26 @@ const server = http.createServer(async (req, res) => {
       const { task_id, student_id, weight_percent, deadline, project_id } = json;
       if (isNaN(task_id) || task_id < 1) return sendJson(res, { error: "Invalid task_id" }, 400);
       if (isNaN(student_id) || student_id < 1) return sendJson(res, { error: "Invalid student_id" }, 400);
-      try {
-        if (dbMode === "mysql") {
+      if (dbMode === "mysql") {
+        const existing = await dbQuery("SELECT ta.id, t.title FROM task_assignments ta JOIN tasks t ON ta.task_id=t.id WHERE ta.student_id=? AND ta.status != 'Completed' AND ta.status != 'Overdue'", [parseInt(student_id)]);
+        if (existing && existing.length) return sendJson(res, { error: "Student is already assigned to task: " + existing[0].title }, 409);
+        try {
           await dbQuery("INSERT INTO task_assignments (task_id, student_id, weight_percent, deadline, project_id, status) VALUES (?, ?, ?, ?, ?, 'Not Started')", [parseInt(task_id), parseInt(student_id), parseInt(weight_percent) || 0, deadline || null, project_id ? parseInt(project_id) : null]);
-        } else {
-          task_assignments.push({ id: genId(), task_id, student_id, weight_percent: weight_percent || 0, deadline: deadline || null, project_id: project_id || null, status: 'Not Started' });
+        } catch(dbErr) {
+          console.error("[server] Assignment INSERT error:", dbErr.message);
+          return sendJson(res, { error: dbErr.message }, 500);
         }
-        return sendJson(res, { success: true });
-      } catch(dbErr) {
-        console.error("[server] Assignment INSERT error:", dbErr.message);
-        return sendJson(res, { error: dbErr.message }, 500);
+      } else {
+        const existing = task_assignments.find(ta => ta.student_id == student_id && ta.status !== "Completed" && ta.status !== "Overdue");
+        if (existing) { const task = tasks.find(t => t.id == existing.task_id); return sendJson(res, { error: "Student is already assigned to task: " + (task?.title || "unknown") }, 409); }
+        try {
+          task_assignments.push({ id: genId(), task_id, student_id, weight_percent: weight_percent || 0, deadline: deadline || null, project_id: project_id || null, status: 'Not Started' });
+        } catch(dbErr) {
+          console.error("[server] Assignment INSERT error:", dbErr.message);
+          return sendJson(res, { error: dbErr.message }, 500);
+        }
       }
+      return sendJson(res, { success: true });
     }
 
     // Tasks/assign: GET
@@ -506,7 +544,7 @@ const server = http.createServer(async (req, res) => {
     if (pathname === "/api/deadlines/upcoming" && method === "GET") {
       if (dbMode === "mysql") {
         const now = new Date().toISOString().split("T")[0];
-        const weekLater = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+        const weekLater = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
         if (sess.role === "teacher") { const d = await dbQuery("SELECT t.id, t.title, t.deadline, t.priority, c.course_code FROM tasks t JOIN courses c ON t.course_id=c.id WHERE t.deadline BETWEEN ? AND ? AND t.status != 'Completed' ORDER BY t.deadline ASC", [now, weekLater]); return sendJson(res, d); }
         else {
           const allAssigns = await dbQuery("SELECT ta.id, ta.task_id, ta.deadline, ta.status FROM task_assignments ta WHERE ta.student_id=?", [sess.userId]);

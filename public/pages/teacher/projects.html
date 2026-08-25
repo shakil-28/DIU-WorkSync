@@ -94,6 +94,7 @@ $("#userName").textContent = s.name;
 
 let courses = [];
 let allStudents = [];
+let occupiedStudents = new Set();
 let currentProjectId = null;
 let selectedMembers = new Set();
 let leaderId = null;
@@ -129,11 +130,11 @@ async function loadProjects() {
   if (projects.length) {
     tbody.innerHTML = projects.map(p =>
       "<tr>" +
-        "<td><strong>" + escapeHtml(p.title) + "</strong></td" +
+        "<td><strong>" + escapeHtml(p.title) + "</strong></td>" +
         "<td>" + escapeHtml(p.course_code) + "</td>" +
         "<td>" + escapeHtml(p.group_name || "Group") + "</td>" +
         "<td>" + (p.member_count || 0) + "</td>" +
-        "<td><span class='badge " + getStatusClass(p.status) + "'>" + p.status + "</span></td" +
+        "<td><span class='badge " + getStatusClass(p.status) + "'>" + p.status + "</span></td>" +
         "<td>" + formatDate(p.created_at) + "</td>" +
         "<td><button class='btn btn-sm btn-primary' onclick='openMemberModal(" + p.id + ")'><i class='fas fa-users'></i> Add Members</button></td>" +
       "</tr>"
@@ -143,11 +144,13 @@ async function loadProjects() {
   }
 }
 
-function openMemberModal(projectId) {
+async function openMemberModal(projectId) {
   currentProjectId = projectId;
   selectedMembers.clear();
   leaderId = null;
   $("#memberSearch").value = "";
+  const occ = await apiFetch("/occupied-students");
+  occupiedStudents = new Set(occ || []);
   filterMembers();
   $("#memberModal").style.display = "flex";
 }
@@ -167,21 +170,21 @@ function filterMembers() {
   );
   
   if (filtered.length) {
-    $("#memberList").innerHTML = filtered.map(st => `
-      <div style="padding:12px;border-bottom:1px solid var(--border);cursor:pointer;display:flex;align-items:center;gap:10px" 
-           onclick="toggleMember(${st.id}, this)" 
-           data-id="${st.id}">
-        <input type="checkbox" style="width:18px;height:18px;cursor:pointer" onclick="event.stopPropagation();toggleMember(${st.id}, this.parentElement)">
+    $("#memberList").innerHTML = filtered.map(st => {
+      const isOccupied = occupiedStudents.has(st.id);
+      return `
+      <div style="padding:12px;border-bottom:1px solid var(--border);cursor:${isOccupied ? 'not-allowed' : 'pointer'};display:flex;align-items:center;gap:10px;${isOccupied ? 'opacity:0.5;' : ''}" data-id="${st.id}">
+        <input type="checkbox" style="width:18px;height:18px;cursor:pointer" ${isOccupied ? 'disabled' : ''} onchange="event.stopPropagation();toggleMember(${st.id}, this.parentElement)">
         <div style="flex:1">
-          <strong>${escapeHtml(st.name)}</strong><br>
+          <strong>${escapeHtml(st.name)}</strong>${isOccupied ? ' <span class="badge badge-overdue" style="font-size:10px">In Group</span>' : ''}<br>
           <small class="text-muted">${escapeHtml(st.email)}</small>
         </div>
-        <select class="form-control" style="width:auto" onclick="event.stopPropagation()" onchange="setLeader(${st.id}, this.value)">
+        ${isOccupied ? '<span style="color:var(--muted);font-size:12px"><i class="fas fa-lock"></i></span>' : `<select class="form-control" style="width:auto" onclick="event.stopPropagation()" onchange="setLeader(${st.id}, this.value)">
           <option value="Member">Member</option>
           <option value="Leader">Leader</option>
-        </select>
-      </div>
-    `).join("");
+        </select>`}
+      </div>`;
+    }).join("");
   } else {
     $("#memberList").innerHTML = "<div class='empty-state'><p>No students found</p></div>";
   }
@@ -189,9 +192,10 @@ function filterMembers() {
 
 function toggleMember(studentId, el) {
   const checkbox = el.querySelector("input[type='checkbox']");
-  checkbox.checked = !checkbox.checked;
+  // Don't toggle — browser already updated it via onchange. Just read the state.
+  const isChecked = checkbox.checked;
   
-  if (checkbox.checked) {
+  if (isChecked) {
     selectedMembers.add(studentId);
     el.style.background = "var(--bg)";
   } else {
@@ -199,7 +203,6 @@ function toggleMember(studentId, el) {
     el.style.background = "";
   }
   
-  // Check if at least one member selected
   $("#saveMemberBtn").disabled = selectedMembers.size === 0;
 }
 

@@ -145,12 +145,12 @@ function renderSubmissions(subs, pagInfo) {
       const scoreDisplay = sub.score !== null && sub.score !== undefined ? `<strong>${sub.score}</strong>/100` : '<span class="text-muted">-</span>';
       const reviewBtn = !sub.review_status ? `<button class="btn btn-sm btn-primary" onclick="openReview(${sub.id})"><i class="fas fa-check"></i> Review</button>` : '<span class="text-muted">Reviewed</span>';
       return "<tr>" +
-        "<td><strong>" + escapeHtml(sub.student_name) + "</strong></td" +
+        "<td><strong>" + escapeHtml(sub.student_name) + "</strong></td>" +
         "<td>" + escapeHtml(sub.task_title) + "</td>" +
         "<td>" + fileIcon + "</td>" +
         "<td>" + formatDateTime(sub.submitted_at) + "</td>" +
         "<td>" + scoreDisplay + "</td>" +
-        "<td><span class='badge " + getStatusClass(sub.review_status || "Pending") + "'>" + (sub.review_status || "Pending") + "</span></td" +
+        "<td><span class='badge " + getStatusClass(sub.review_status || "Pending") + "'>" + (sub.review_status || "Pending") + "</span></td>" +
         "<td>" + (sub.review_status ? "<span class='text-muted'>" + escapeHtml(sub.feedback ? "See details" : "-") + "</span>" : "-") + "</td>" +
         "<td>" +
           reviewBtn + " " +

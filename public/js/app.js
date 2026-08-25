@@ -58,7 +58,7 @@ const Session = {
 async function apiFetch(endpoint, options = {}) {
   const opts = { ...options, headers: { "Content-Type": "application/json", ...(options.headers || {}) }, credentials: "include" };
   const r = await fetch(API + endpoint, opts);
-  if (r.status === 401) { window.location.href = "/index.html"; return null; }
+  if (r.status === 401) { localStorage.removeItem("ws_user"); window.location.href = "/index.html"; return null; }
   return r.json();
 }
 

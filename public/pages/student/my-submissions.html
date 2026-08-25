@@ -98,10 +98,10 @@ function renderSubmissions(subs, pagInfo) {
   if (subs.length) {
     tbody.innerHTML = subs.map(sub => 
       "<tr>" +
-        "<td><strong>" + escapeHtml(sub.task_title) + "</strong></td" +
+        "<td><strong>" + escapeHtml(sub.task_title) + "</strong></td>" +
         "<td>" + formatDateTime(sub.submitted_at) + "</td>" +
         "<td>" + (sub.score !== null && sub.score !== undefined ? "<strong>" + sub.score + "</strong>/100" : "<span class='text-muted'>-</span>") + "</td>" +
-        "<td><span class='badge " + getStatusClass(sub.review_status || "Pending") + "'>" + (sub.review_status || "Pending") + "</span></td" +
+        "<td><span class='badge " + getStatusClass(sub.review_status || "Pending") + "'>" + (sub.review_status || "Pending") + "</span></td>" +
         "<td>" + escapeHtml(sub.feedback || "-") + "</td>" +
       "</tr>"
     ).join("");

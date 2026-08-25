@@ -128,6 +128,7 @@ $("#userName").textContent = s.name;
 let courses = [];
 let allStudents = [];
 let allTasks = [];
+let occupiedStudents = new Set();
 let taskPage = 1;
 const TASKS_PER_PAGE = 10;
 
@@ -205,10 +206,10 @@ function renderTasks(tasks) {
     tbody.innerHTML = tasks.map(t => {
       const assignedCount = 0;
       return "<tr>" +
-        "<td><strong>" + escapeHtml(t.title) + "</strong></td" +
+        "<td><strong>" + escapeHtml(t.title) + "</strong></td>" +
         "<td>" + escapeHtml(t.type) + "</td>" +
         "<td>" + escapeHtml(t.course_code) + "</td>" +
-        "<td><span class='" + getPriorityClass(t.priority) + "'>" + t.priority + "</span></td" +
+        "<td><span class='" + getPriorityClass(t.priority) + "'>" + t.priority + "</span></td>" +
         "<td>" + formatDate(t.deadline) + "</td>" +
         "<td>" + assignedCount + " students</td>" +
         "<td>" +
@@ -223,14 +224,19 @@ function renderTasks(tasks) {
   }
 }
 
-function openAssignModal(taskId, taskTitle) {
+async function openAssignModal(taskId, taskTitle) {
   console.log("[openAssignModal] taskId=" + taskId + " taskTitle=" + taskTitle + " type=" + typeof taskId);
   $("#assignTaskId").value = taskId;
   console.log("[openAssignModal] hidden value set to:", $("#assignTaskId").value);
   $("#assignWeight").value = "";
   $("#assignDeadline").value = "";
+  const occ = await apiFetch("/occupied-students");
+  occupiedStudents = new Set(occ || []);
   const students = allStudents.filter(st => st.role === "student");
-  $("#assignStudent").innerHTML = students.map(st => "<option value='" + st.id + "'>" + escapeHtml(st.name) + " (" + escapeHtml(st.email) + ")</option>").join("");
+  $("#assignStudent").innerHTML = students.map(st => {
+    const isOcc = occupiedStudents.has(st.id);
+    return "<option value='" + st.id + "' " + (isOcc ? "disabled title='Already in a group work'" : "") + ">" + escapeHtml(st.name) + " (" + escapeHtml(st.email) + ")" + (isOcc ? " [In Group]" : "") + "</option>";
+  }).join("");
   $("#assignModal").style.display = "flex";
 }
 
