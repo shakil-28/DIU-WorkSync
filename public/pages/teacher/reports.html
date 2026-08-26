@@ -27,31 +27,8 @@
 </head>
 <body>
 <div class="app-layout">
-<header class="topbar">
-<div class="topbar-left"><button class="hamburger" id="hamburgerBtn"><i class="fas fa-bars"></i></button><a href="../../index.html" class="logo">DIU WorkSync</a></div>
-<div class="topbar-right">
-<button class="theme-toggle" id="themeToggle"><i class="fas fa-moon"></i></button>
-<div class="user-info"><i class="fas fa-user-circle"></i><span id="userName"></span><span id="roleBadge" class="role-badge role-teacher">Teacher</span></div>
-<button class="logout-btn" onclick="Session.logout()"><i class="fas fa-sign-out-alt"></i></button>
-</div>
-</header>
-<div class="sidebar-overlay" id="sidebarOverlay"></div>
-<aside class="sidebar" id="sidebar">
-<nav class="sidebar-nav">
-<div class="nav-section">Main</div>
-<a href="dashboard.html" class="nav-link"><i class="fas fa-tachometer-alt"></i> Dashboard</a>
-<a href="courses.html" class="nav-link"><i class="fas fa-book"></i> Courses</a>
-<a href="projects.html" class="nav-link"><i class="fas fa-project-diagram"></i> Projects</a>
-<a href="tasks.html" class="nav-link"><i class="fas fa-tasks"></i> Tasks</a>
-<div class="nav-section">Management</div>
-<a href="submissions.html" class="nav-link"><i class="fas fa-file-upload"></i> Submissions</a>
-<a href="reports.html" class="nav-link active"><i class="fas fa-chart-bar"></i> Reports</a>
-<a href="announcements.html" class="nav-link"><i class="fas fa-bullhorn"></i> Announcements</a>
-<div class="nav-divider"></div>
-<a href="activity.html" class="nav-link"><i class="fas fa-history"></i> Activity Log</a>
-<a href="#" class="nav-link logout" onclick="Session.logout()"><i class="fas fa-sign-out-alt"></i> Logout</a>
-</nav>
-</aside>
+<header class="topbar-placeholder"></header>
+<aside class="sidebar-placeholder"></aside>
 <main class="main-content">
 <div class="card">
 <div class="card-header">Class Reports</div>
@@ -94,7 +71,7 @@ Final Contribution Score = Weight % × (Average Review Score / 100) × 100<br><b
 <h3><i class="fas fa-history"></i> Override History</h3>
 <div id="historyContent"></div>
 </div>
-</main>
+<div class="contrib-card"><h3><i class="fas fa-history"></i> Export History</h3><div id="exportHistoryList"></div></div></main>
 <footer class="main-footer">&copy; 2026 DIU WorkSync</footer>
 </div>
 <script src="/js/app.js">// Event delegation for data-* buttons
@@ -105,7 +82,9 @@ document.addEventListener("click", function(e) {
     overrideWeight(projectId, studentId, oldWeight);
   }
 });
+
 </script>
+<script src="/js/navbar.js"></script>
 <script>
 requireAuth(); requireRole("teacher");
 const s = Session.get();
@@ -126,22 +105,21 @@ let allMembers = {};
 
   const allTasks = tasks || [];
   const allSubs = subs || [];
-  const completed = allSubs.filter(sub => sub.status === "Completed").length;
-  const pending = allSubs.filter(sub => sub.review_status === "Pending").length;
+  const completed = allSubs.filter(sub => sub.review_status === "Approved").length;
+  const pending = allSubs.filter(sub => !sub.review_status).length;
   const avgScore = allSubs.filter(sub => sub.score).reduce((a, b) => a + (b.score || 0), 0) / (allSubs.filter(sub => sub.score).length || 1);
 
-  $("#statTotal").textContent = "—";
+  const students = await apiFetch("/users");
+  $("#statTotal").textContent = students?.length || 0;
   $("#statCompleted").textContent = completed;
   $("#statPending").textContent = pending;
   $("#statAvg").textContent = Math.round(avgScore) + "%";
-
-  const students = await apiFetch("/users");
   const tbody = $("#reportTable");
   if (students?.length) {
     tbody.innerHTML = students.map(st => {
       const stSubs = allSubs.filter(sub => sub.student_id === st.id);
-      const stDone = stSubs.filter(sub => sub.status === "Completed").length;
-      const stPending = stSubs.filter(sub => sub.review_status === "Pending").length;
+      const stDone = stSubs.filter(sub => sub.review_status === "Approved").length;
+      const stPending = stSubs.filter(sub => !sub.review_status).length;
       const stAvg = stSubs.filter(sub => sub.score).length ? Math.round(stSubs.filter(sub => sub.score).reduce((a, b) => a + b.score, 0) / stSubs.filter(sub => sub.score).length) : 0;
       return "<tr><td><strong>" + escapeHtml(st.name) + "</strong></td><td>" + stDone + "</td><td>" + stPending + "</td><td>" + stAvg + "%</td><td><span class='badge " + getStatusClass(stDone > 0 ? "In Progress" : "Not Started") + "'>" + (stDone > 0 ? "Active" : "Inactive") + "</span></td></tr>";
     }).join("");
@@ -149,7 +127,7 @@ let allMembers = {};
     tbody.innerHTML = "<tr><td colspan='5'><div class='empty-state'><i class='fas fa-chart-bar'></i><p>No students found</p></div></td></tr>";
   }
 
-  renderProjectSelector(courses); loadExportHistory();
+  await renderProjectSelector(); loadExportHistory();
 })();
 
 
@@ -183,60 +161,73 @@ async function generateReport() {
   loadExportHistory();
 }
 
-function renderProjectSelector(courses) {
+async function renderProjectSelector() {
+  const projects = await apiFetch("/projects");
+  if (!projects) return;
+  allProjects = projects;
   let html = "<div style='margin-bottom:16px'><select class='form-control' id='projectSelect' onchange='loadProjectContrib(this.value)' style='max-width:400px'>";
-  html += "<option value=''>-- Select Course & Project --</option>";
-  courses.forEach(c => {
-    html += "<optgroup label='" + escapeHtml(c.course_name) + " (" + escapeHtml(c.course_code) + ")'>";
-    html += "<option value='__COURSE__" + c.id + "'>📁 " + escapeHtml(c.course_name) + "</option>";
+  html += "<option value=''>-- Select Project --</option>";
+  const coursesMap = {};
+  projects.forEach(p => {
+    if (!coursesMap[p.course_code]) coursesMap[p.course_code] = { name: p.course_name, projects: [] };
+    coursesMap[p.course_code].projects.push(p);
+  });
+  Object.entries(coursesMap).forEach(([code, data]) => {
+    html += "<optgroup label='" + escapeHtml(data.name) + " (" + escapeHtml(code) + ")'>";
+    data.projects.forEach(p => {
+      html += "<option value='" + p.id + "'>📁 " + escapeHtml(p.title) + "</option>";
+    });
     html += "</optgroup>";
   });
   html += "</select></div>";
-  $("#contribContent").prepend(html);
+  const contribContent = document.getElementById("contribContent");
+  if (contribContent) {
+    contribContent.insertAdjacentHTML("afterbegin", html);
+  }
 }
 
+
 async function loadProjectContrib(val) {
-  if (!val || val.startsWith("__COURSE__")) return;
+  if (!val) return;
   selectedProjectId = val;
-  const courseId = val;
-  const projects = allCourses.filter(c => c.id == courseId);
-  if (projects.length) {
-    const c = projects[0];
-    const members = await apiFetch("/contributions/" + c.id);
-    if (members) {
-      allMembers[c.id] = members;
-      renderContributions(c.id, members);
-      loadHistory(c.id);
-    }
+  const project = allProjects.find(p => p.id == val);
+  if (!project) return;
+  selectedProjectName = project.title;
+  const members = await apiFetch("/contributions/" + val);
+  if (members) {
+    allMembers[val] = members;
+    renderContributions(val, members);
+    loadHistory(val);
   }
 }
 
 function renderContributions(projectId, members) {
-  const el = $("#contribContent");
-  const project = allCourses.find(c => c.id == projectId);
+  const el = document.getElementById("contribContent");
+  const project = allProjects.find(p => p.id == projectId);
   if (!members?.length) {
     el.innerHTML = "<div class='empty-state'><i class='fas fa-users'></i><p>No members in this project</p></div>";
     return;
   }
   const totalWeight = members.reduce((s, m) => s + m.weight_percent, 0);
-  let html = "<p style='color:var(--muted);font-size:13px;margin-bottom:12px'><strong>Project:</strong> " + escapeHtml(project?.course_name || projectId) + " | Total Weight: " + totalWeight + "%</p>";
+  let html = "<p style='color:var(--muted);font-size:13px;margin-bottom:12px'><strong>Project:</strong> " + escapeHtml(project?.title || projectId) + " | Total Weight: " + totalWeight + "%</p>";
   html += "<table><tr><th>Member</th><th>Weight %</th><th>Avg Score</th><th>Final Score</th><th>Status</th><th>Override</th></tr>";
   members.forEach(m => {
-    const finalScore = Math.min(100, Math.round(m.weight_percent * (m.score || 0) / 100));
+    const finalScore = m.calculated_score || Math.min(100, Math.round(m.weight_percent * (m.score || 0) / 100));
+    const status = m.review_status === "Approved" ? "Completed" : m.review_status === "Revision Requested" ? "In Progress" : "Not Started";
     html += "<tr>" +
       "<td><strong>" + escapeHtml(m.name) + "</strong></td>" +
       "<td><input type='number' class='contrib-input' id='weight_" + m.id + "' value=" + m.weight_percent + " min='0' max='100'></td>" +
       "<td>" + (m.score || 0) + "</td>" +
       "<td class='final'>" + finalScore + "</td>" +
-      "<td><span class='badge " + getStatusClass(m.review_status) + "'>" + m.review_status + "</span></td>" +
-      `<td><button class='btn-override' data-override-weight="${projectId}|${m.id}|${m.weight_percent}"><i class='fas fa-edit'></i> Update</button></td>` +
+      "<td><span class='badge " + getStatusClass(status) + "'>" + status + "</span></td>" +
+      "<td><button class='btn-override' data-override-weight='" + projectId + "|" + m.id + "|" + m.weight_percent + "'><i class='fas fa-edit'></i> Update</button></td>" +
     "</tr>";
   });
   html += "</table>";
   // Keep the selector
-  const sel = $("#projectSelect");
-  el.innerHTML = html;
-  el.prepend(sel.outerHTML);
+  const selWrapper = document.querySelector("#contribContent > div:first-child");
+  const selHtml = selWrapper ? selWrapper.outerHTML : "";
+  el.innerHTML = selHtml + html;
 }
 
 async function overrideWeight(projectId, studentId, oldWeight) {
@@ -283,6 +274,21 @@ document.addEventListener("click", function(e) {
     overrideWeight(projectId, studentId, oldWeight);
   }
 });
+async function loadExportHistory() {
+  const history = await apiFetch("/reports/export/history");
+  if (!history?.length) {
+    const el = document.getElementById("exportHistoryList");
+    if (el) el.innerHTML = "<div class='empty-state'><i class='fas fa-history'></i><p>No export history</p></div>";
+    return;
+  }
+  const el = document.getElementById("exportHistoryList");
+  if (el) {
+    el.innerHTML = history.map(h =>
+      "<div class='history-item'><strong>" + escapeHtml(h.report_type) + "</strong> - " + escapeHtml(h.project_title || 'Class Summary') + "<br>" +
+      "<span class='time'>" + formatDateTime(h.generated_at) + "</span></div>"
+    ).join("");
+  }
+}
 </script>
 
 <!-- Export Modal -->
@@ -303,5 +309,7 @@ document.addEventListener("click", function(e) {
 </div>
 </div>
 </div>
+
+
 </body>
 </html>

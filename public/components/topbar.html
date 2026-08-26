@@ -1,0 +1,13 @@
+<header class="topbar">
+<div class="topbar-left">
+<button class="hamburger" id="hamburgerBtn"><i class="fas fa-bars"></i></button>
+<a href="../../index.html" class="logo">DIU WorkSync</a>
+</div>
+<div class="topbar-right">
+<button class="theme-toggle" id="themeToggle"><i class="fas fa-moon"></i></button>
+<div class="user-info"><i class="fas fa-user-circle"></i><span id="userName"></span><span id="roleBadge" class="role-badge"></span></div>
+<button class="logout-btn notif-btn" onclick="window.location.href='notifications.html'" title="Notifications"><i class="fas fa-bell"></i><span id="annBadge" class="notif-badge" style="display:none"></span></button>
+<button class="logout-btn" onclick="Session.logout()"><i class="fas fa-sign-out-alt"></i></button>
+</div>
+</header>
+<div class="sidebar-overlay" id="sidebarOverlay"></div>

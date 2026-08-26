@@ -116,7 +116,7 @@ function initNavbar() {
   }
 }
 
-document.addEventListener("DOMContentLoaded", () => { initSidebar(); initTheme(); initNavbar(); });
+document.addEventListener("DOMContentLoaded", () => { initSidebar(); initTheme(); initNavbar(); renderNavbar(); });
 
 // Search & Filter Helpers
 function getQueryParam(name) {
@@ -179,3 +179,5 @@ function applyFilters(items, query, filters, page, perPage) {
   const start = (safePage - 1) * perPage;
   return { items: result.slice(start, start + perPage), total, page: safePage, totalPages };
 }
+
+// Navbar Component Loader

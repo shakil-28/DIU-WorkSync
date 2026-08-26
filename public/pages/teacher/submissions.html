@@ -9,34 +9,13 @@
 </head>
 <body>
 <div class="app-layout">
-<header class="topbar">
-<div class="topbar-left"><button class="hamburger" id="hamburgerBtn"><i class="fas fa-bars"></i></button><a href="../../index.html" class="logo">DIU WorkSync</a></div>
-<div class="topbar-right">
-<button class="theme-toggle" id="themeToggle"><i class="fas fa-moon"></i></button>
-<div class="user-info"><i class="fas fa-user-circle"></i><span id="userName"></span><span id="roleBadge" class="role-badge role-teacher">Teacher</span></div>
-<button class="logout-btn" onclick="Session.logout()"><i class="fas fa-sign-out-alt"></i></button>
-</div>
-</header>
-<div class="sidebar-overlay" id="sidebarOverlay"></div>
-<aside class="sidebar" id="sidebar">
-<nav class="sidebar-nav">
-<div class="nav-section">Main</div>
-<a href="dashboard.html" class="nav-link"><i class="fas fa-tachometer-alt"></i> Dashboard</a>
-<a href="courses.html" class="nav-link"><i class="fas fa-book"></i> Courses</a>
-<a href="projects.html" class="nav-link"><i class="fas fa-project-diagram"></i> Projects</a>
-<a href="tasks.html" class="nav-link"><i class="fas fa-tasks"></i> Tasks</a>
-<div class="nav-section">Management</div>
-<a href="submissions.html" class="nav-link active"><i class="fas fa-file-upload"></i> Submissions</a>
-<a href="reports.html" class="nav-link"><i class="fas fa-chart-bar"></i> Reports</a>
-<a href="announcements.html" class="nav-link"><i class="fas fa-bullhorn"></i> Announcements</a>
-<div class="nav-divider"></div>
-<a href="#" class="nav-link logout" onclick="Session.logout()"><i class="fas fa-sign-out-alt"></i> Logout</a>
-</nav>
-</aside>
+<header class="topbar-placeholder"></header>
+<aside class="sidebar-placeholder"></aside>
 <main class="main-content">
 <div class="card">
-<div class="card-header">
+<div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
 <span><i class="fas fa-file-upload"></i> All Submissions</span>
+<button class="btn btn-sm btn-outline" onclick="viewHistory()"><i class="fas fa-history"></i> Review History</button>
 </div>
 <div class="search-bar">
   <div class="search-icon" style="flex:1">
@@ -53,15 +32,6 @@
 </div>
 <div id="subResultsCount" class="results-count"></div>
 <div class="table-responsive">
-<option value="">All</option>
-<option value="Pending">Pending</option>
-<option value="Approved">Approved</option>
-<option value="Revision Requested">Revision Requested</option>
-<option value="Rejected">Rejected</option>
-</select>
-</div>
-</div>
-<div class="table-responsive">
 <table>
 <tr><th>Student</th><th>Task</th><th>File</th><th>Submitted</th><th>Score</th><th>Status</th><th>Review</th><th>Actions</th></tr>
 <tbody id="subTable"></tbody>
@@ -70,6 +40,7 @@
 </div>
 <div id="subPagination"></div>
 </main>
+<footer class="main-footer">&copy; 2026 DIU WorkSync</footer>
 
 <!-- Review Modal -->
 <div id="reviewModal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:2000;align-items:center;justify-content:center">
@@ -110,6 +81,7 @@
 </div>
 
 <script src="/js/app.js"></script>
+<script src="/js/navbar.js"></script>
 <script>
 requireAuth(); requireRole("teacher");
 const s = Session.get();
@@ -128,7 +100,15 @@ const SUBS_PER_PAGE = 8;
 function applySubFilters() {
   const query = ($("#subSearch").value || "").trim();
   const status = $("#filterStatus").value;
-  const result = applyFilters(allSubmissions, query, { status }, subPage, SUBS_PER_PAGE);
+  let filtered = allSubmissions;
+  if (query) filtered = filtered.filter(sub => (sub.student_name || "").toLowerCase().includes(query.toLowerCase()) || (sub.task_title || "").toLowerCase().includes(query.toLowerCase()));
+  if (status === "Pending") filtered = filtered.filter(sub => !sub.review_status);
+  else if (status) filtered = filtered.filter(sub => sub.review_status === status);
+  const total = filtered.length;
+  const totalPages = Math.ceil(total / SUBS_PER_PAGE) || 1;
+  const safePage = Math.min(subPage, totalPages);
+  const start = (safePage - 1) * SUBS_PER_PAGE;
+  const result = { items: filtered.slice(start, start + SUBS_PER_PAGE), total, page: safePage, totalPages };
   renderSubmissions(result.items, result);
 }
 
@@ -192,7 +172,9 @@ async function saveReview(e) {
   if (r) { 
     showNotif("Review saved!", "success"); 
     closeReviewModal();
-    location.reload(); 
+    // Refresh submissions list without full page reload
+    allSubmissions = await apiFetch("/submissions");
+    if (allSubmissions) applySubFilters();
   }
 }
 

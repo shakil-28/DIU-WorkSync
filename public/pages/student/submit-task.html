@@ -9,31 +9,8 @@
 </head>
 <body>
 <div class="app-layout">
-<header class="topbar">
-<div class="topbar-left"><button class="hamburger" id="hamburgerBtn"><i class="fas fa-bars"></i></button><a href="../../index.html" class="logo">DIU WorkSync</a></div>
-<div class="topbar-right">
-<button class="theme-toggle" id="themeToggle"><i class="fas fa-moon"></i></button>
-<div class="user-info"><i class="fas fa-user-circle"></i><span id="userName"></span><span id="roleBadge" class="role-badge role-student">Student</span></div>
-<button class="logout-btn" onclick="Session.logout()"><i class="fas fa-sign-out-alt"></i></button>
-</div>
-</header>
-<div class="sidebar-overlay" id="sidebarOverlay"></div>
-<aside class="sidebar" id="sidebar">
-<nav class="sidebar-nav">
-<div class="nav-section">Main</div>
-<a href="dashboard.html" class="nav-link"><i class="fas fa-tachometer-alt"></i> Dashboard</a>
-<a href="my-courses.html" class="nav-link"><i class="fas fa-book"></i> My Courses</a>
-<a href="my-tasks.html" class="nav-link"><i class="fas fa-tasks"></i> My Tasks</a>
-<a href="my-projects.html" class="nav-link"><i class="fas fa-project-diagram"></i> My Projects</a>
-<div class="nav-section">More</div>
-<a href="my-submissions.html" class="nav-link"><i class="fas fa-file-upload"></i> Submissions</a>
-<a href="contribution-report.html" class="nav-link"><i class="fas fa-chart-pie"></i> My Contribution</a>
-<a href="activity.html" class="nav-link"><i class="fas fa-history"></i> Activity</a>
-<a href="profile.html" class="nav-link"><i class="fas fa-user"></i> Profile</a>
-<div class="nav-divider"></div>
-<a href="#" class="nav-link logout" onclick="Session.logout()"><i class="fas fa-sign-out-alt"></i> Logout</a>
-</nav>
-</aside>
+<header class="topbar-placeholder"></header>
+<aside class="sidebar-placeholder"></aside>
 <main class="main-content">
 <div class="card">
 <div class="card-header"><i class="fas fa-paper-plane"></i> Submit Task</div>
@@ -65,6 +42,7 @@
 <div class="card">
 <div class="card-header"><i class="fas fa-edit"></i> Text Submission</div>
 <form onsubmit="submitTask(event)">
+<input type="hidden" id="taskId" value="">
 <div class="form-group"><label>Description / Report</label><textarea class="form-control" id="subDesc" rows="4" placeholder="Write your submission description here..."></textarea></div>
 <div class="form-group"><label>Project Link (Optional)</label><input type="url" class="form-control" id="subLink" placeholder="https://github.com/... or Google Drive link"></div>
 <div style="display:flex;gap:10px">
@@ -74,7 +52,9 @@
 </form>
 </div>
 </main>
+
 <script src="/js/app.js"></script>
+<script src="/js/navbar.js"></script>
 <script>
 requireAuth(); requireRole("student");
 const s = Session.get();
@@ -83,6 +63,7 @@ $("#userName").textContent = s.name;
 const params = new URLSearchParams(window.location.search);
 const taskId = params.get("id");
 let selectedFile = null;
+let taskAssignmentId = taskId || $("#taskId").value;  // Keep for form submission
 
 (async function loadTask() {
   if (!taskId) { window.location.href = "/pages/student/my-tasks.html"; return; }
@@ -91,6 +72,7 @@ let selectedFile = null;
   const task = tasks.find(t => t.id == taskId);
   if (!task) { window.location.href = "/pages/student/my-tasks.html"; return; }
   $("#taskInfo").innerHTML = "<strong>" + escapeHtml(task.title) + "</strong><br>" + escapeHtml(task.description) + " | Course: " + escapeHtml(task.course_code) + " | Weight: " + (task.weight_percent || 0) + "%";
+  $("#taskId").value = taskId;
 })();
 
 function handleFileSelect(input) {
@@ -153,6 +135,7 @@ async function submitTask(e) {
   const link = $("#subLink").value.trim();
   
   const formData = new FormData();
+  formData.append('task_assignment_id', taskAssignmentId);
   formData.append('description', desc);
   if (link) formData.append('link_url', link);
   if (selectedFile) formData.append('file', selectedFile);
@@ -176,5 +159,7 @@ async function submitTask(e) {
   }
 }
 </script>
+<footer class="main-footer">&copy; 2026 DIU WorkSync</footer>
+</div>
 </body>
 </html>

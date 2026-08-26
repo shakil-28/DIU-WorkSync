@@ -14,6 +14,7 @@ if (!fs.existsSync(UPLOAD_DIR)) {
 // Check MySQL availability
 let dbMode = "in-memory";
 let dbQuery = null;
+let dbPool = null;
 (async () => {
   try {
     const mysql = require("mysql2/promise");
@@ -21,14 +22,32 @@ let dbQuery = null;
     const testConn = await mysql.createConnection({ host: config.host, user: config.user, password: config.password, database: config.database });
     await testConn.end();
     dbMode = "mysql";
+    dbPool = mysql.createPool({ host: config.host, user: config.user, password: config.password, database: config.database, connectionLimit: 10 });
     dbQuery = async (sql, params) => {
-      const conn = await mysql.createConnection({ host: config.host, user: config.user, password: config.password, database: config.database });
-      const [rows] = await conn.execute(sql, params);
-      await conn.end();
-      return rows;
+      const conn = await dbPool.getConnection();
+      try {
+        const [rows] = await conn.execute(sql, params);
+        return rows;
+      } finally {
+        conn.release();
+      }
     };
-    console.log("Connected to MySQL database");
-    // Verify critical tables exist
+    // dbQuery.transactional: runs multiple queries on the SAME connection (for LAST_INSERT_ID, transactions)
+    dbQuery.transactional = async (fn) => {
+      const conn = await dbPool.getConnection();
+      try {
+        await conn.beginTransaction();
+        const result = await fn(conn);
+        await conn.commit();
+        return result;
+      } catch(e) {
+        try { await conn.rollback(); } catch(r) { console.error("[server] Rollback error:", r.message); }
+        throw e;
+      } finally {
+        conn.release();
+      }
+    };
+    console.log("Connected to MySQL database (pool)");
     try {
       await dbQuery("SELECT 1 FROM tasks LIMIT 1");
       console.log("  ✓ tasks table OK");
@@ -66,41 +85,60 @@ function getStatusClass(s) { if (!s) return "badge-info"; if (s === "Completed" 
 function parseMultipart(req, res, callback) {
   const boundary = req.headers['content-type'].split('boundary=')[1];
   if (!boundary) return sendJson(res, { error: "No boundary" }, 400);
-  let body = '';
-  req.on('data', chunk => body += chunk);
-  req.on('end', () => {
-    const parts = body.split('--' + boundary);
+  const sep = "--" + boundary;
+  const sepBuf = Buffer.from(sep);
+  const headersSep = Buffer.from("\r\n\r\n");
+  const chunks = [];
+  req.on("data", chunk => chunks.push(chunk));
+  req.on("end", () => {
+    const body = Buffer.concat(chunks);
+    // Manual buffer split (Buffer.prototype.split does not exist)
+    const parts = [];
+    let start = 0;
+    let idx;
+    while ((idx = body.indexOf(sepBuf, start)) !== -1) {
+      parts.push(body.slice(start, idx));
+      start = idx + sepBuf.length;
+    }
+    parts.push(body.slice(start));
     const result = { fields: {}, files: {} };
     for (let i = 1; i < parts.length - 1; i++) {
       const part = parts[i];
-      if (part.includes('filename="')) {
-        const nameMatch = part.match(/name="([^"]+)"/);
-        const fileMatch = part.match(/filename="([^"]+)"/);
-        const typeMatch = part.match(/Content-Type: ([^\r\n]+)/);
+      const sepIdx = part.indexOf(headersSep);
+      if (sepIdx === -1) continue;
+      const headerBuf = part.slice(0, sepIdx);
+      const bodyBuf = part.slice(sepIdx + headersSep.length);
+      const headerStr = headerBuf.toString("utf8");
+      if (headerStr.includes("filename=")) {
+        const nameMatch = headerStr.match(/name="([^"]+)"/);
+        const fileMatch = headerStr.match(/filename="([^"]+)"/);
+        const typeMatch = headerStr.match(/Content-Type: ([^\r\n]+)/);
         if (nameMatch && fileMatch) {
           const fieldName = nameMatch[1];
           const filename = fileMatch[1];
-          const contentType = typeMatch ? typeMatch[1].trim() : 'application/octet-stream';
-          const fileBody = part.split('\n\n')[1];
-          const uniqueName = Date.now() + '-' + filename;
-          fs.writeFileSync(path.join(UPLOAD_DIR, uniqueName), fileBody);
+          const contentType = typeMatch ? typeMatch[1].trim() : "application/octet-stream";
+          const cleanBody = bodyBuf.slice(0, -2);
+          const uniqueName = Date.now() + "-" + filename;
+          fs.writeFileSync(path.join(UPLOAD_DIR, uniqueName), cleanBody);
           result.files[fieldName] = { filename: uniqueName, originalname: filename, contentType };
         }
-      } else if (part.includes('Content-Disposition') && !part.includes('filename')) {
-        const nameMatch = part.match(/name="([^"]+)"/);
-        const body = part.split('\n\n')[1].trim();
-        if (nameMatch) result.fields[nameMatch[1]] = body;
+      } else {
+        const nameMatch = headerStr.match(/name="([^"]+)"/);
+        if (nameMatch) {
+          result.fields[nameMatch[1]] = bodyBuf.toString("utf8").replace(/\r\n$/, "");
+        }
       }
     }
     callback(result);
   });
 }
 
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://localhost");
   const pathname = url.pathname;
   const method = req.method;
-
+  let json = {};
   // CORS - Handle credentials properly
   const origin = req.headers.origin || "http://localhost:5555";
   res.setHeader("Access-Control-Allow-Origin", origin);
@@ -124,8 +162,9 @@ const server = http.createServer(async (req, res) => {
   // Static files
   if (pathname.startsWith("/css/") || pathname.startsWith("/js/") || pathname.startsWith("/uploads/")) {
     const ext = path.extname(pathname);
-    const ct = { ".css": "text/css", ".js": "application/javascript", ".png": "image/png", ".jpg": "image/jpeg", ".pdf": "application/pdf" }[ext] || "text/plain";
-    const p = path.join(PUBLIC_DIR, pathname);
+    const ct = { ".css": "text/css", ".js": "application/javascript", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".pdf": "application/pdf", ".zip": "application/zip", ".rar": "application/x-rar-compressed", ".doc": "application/msword", ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".txt": "text/plain", ".md": "text/plain", ".mp4": "video/mp4", ".mp3": "audio/mpeg" }[ext] || "application/octet-stream";
+    const decodedPath = decodeURIComponent(pathname);
+    const p = path.join(PUBLIC_DIR, decodedPath);
     if (fs.existsSync(p)) { res.writeHead(200, { "Content-Type": ct }); fs.createReadStream(p).pipe(res); }
     else sendJson(res, { error: "Not found" }, 404);
     return;
@@ -149,6 +188,34 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // Handle multipart requests before the generic body parser
+  if (pathname === "/api/submissions/upload" && method === "POST") {
+    parseMultipart(req, res, async function(parsed) {
+      try {
+        const file = parsed.files['file'];
+        const description = parsed.fields['description'] || '';
+        const link_url = parsed.fields['link_url'] || null;
+        const task_assignment_id = parsed.fields['task_assignment_id'] || 0;
+        const sess = getSession(req);
+        if (!sess) return sendJson(res, { error: "Unauthorized" }, 401);
+        const s = { id: genId(), task_assignment_id: parseInt(task_assignment_id), student_id: sess.userId, file_path: file ? file.filename : null, description, link_url, submitted_at: new Date().toISOString() };
+        if (dbMode === "mysql") {
+          await dbQuery.transactional(async (conn) => {
+            const [ir] = await conn.execute("INSERT INTO submissions (task_assignment_id, student_id, file_path, description, link_url, submitted_at) VALUES (?, ?, ?, ?, ?, NOW())", [parseInt(task_assignment_id), sess.userId, file ? file.filename : null, description, link_url]);
+            s.id = ir.insertId;
+            if (task_assignment_id) await conn.execute("UPDATE task_assignments SET status='In Progress' WHERE id=?", [task_assignment_id]);
+            await conn.execute("INSERT INTO activity_logs (user_id, action, logged_at) VALUES (?, ?, NOW())", [sess.userId, file ? "Uploaded file: " + file.originalname : "Submitted text"]);
+          });
+        } else { submissions.push(s); if (task_assignment_id) { const ta = task_assignments.find(ta => ta.id === parseInt(task_assignment_id)); if (ta) ta.status = "In Progress"; } activities.push({ id: genId(), user_id: sess.userId, action: file ? "Uploaded file: " + file.originalname : "Submitted text", logged_at: new Date().toISOString() }); }
+        return sendJson(res, { ...s, file_url: file ? "/uploads/" + file.filename : null, file_name: file ? file.originalname : null });
+      } catch (err) {
+        console.error("[server] Submission upload error:", err);
+        return sendJson(res, { error: "Database error: " + err.message }, 500);
+      }
+    });
+    return;
+  }
+
   // Parse body
   let body = "";
   req.on("data", chunk => body += chunk);
@@ -160,6 +227,7 @@ const server = http.createServer(async (req, res) => {
 
     // Auth: Login
     if (pathname === "/api/auth/login" && method === "POST") {
+      try {
       const user = dbMode === "mysql" ? await dbQuery("SELECT * FROM users WHERE email = ?", [json.email]) : users.find(u => u.email === json.email);
       if (!user) return sendJson(res, { error: "User not found" }, 404);
       const u = Array.isArray(user) ? user[0] : user;
@@ -169,6 +237,10 @@ const server = http.createServer(async (req, res) => {
       if (dbMode === "mysql") await dbQuery("INSERT INTO activity_logs (user_id, action, logged_at) VALUES (?, ?, NOW())", [u.id, "Logged in"]);
       else activities.push({ id: genId(), user_id: u.id, action: "Logged in", logged_at: new Date().toISOString() });
       return sendJson(res, { id: u.id, name: u.name, email: u.email, role: u.role });
+      } catch (err) {
+        console.error("[server] Login error:", err);
+        return sendJson(res, { error: "Database error: " + err.message }, 500);
+      }
     }
 
     // Auth: Register
@@ -177,7 +249,7 @@ const server = http.createServer(async (req, res) => {
       if (existing && existing.length) return sendJson(res, { error: "Email already registered" }, 409);
       const hashed = hashPassword(json.password);
       const newUser = { id: genId(), name: json.name, email: json.email, password: hashed, role: json.role || "student" };
-      if (dbMode === "mysql") { await dbQuery("INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, ?)", [json.name, json.email, hashed, json.role || "student"]); newUser.id = await dbQuery("SELECT LAST_INSERT_ID()"); newUser.id = newUser.id[0]['LAST_INSERT_ID()']; }
+      if (dbMode === "mysql") { await dbQuery.transactional(async (conn) => { await conn.execute("INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, ?)", [json.name, json.email, hashed, json.role || "student"]); newUser.id = (await conn.execute("SELECT LAST_INSERT_ID() as id"))[0].id; }); }
       else users.push(newUser);
       return sendJson(res, { id: newUser.id, name: newUser.name, email: newUser.email, role: newUser.role });
     }
@@ -187,34 +259,61 @@ const server = http.createServer(async (req, res) => {
 
     // Auth: Get current user
     if (pathname === "/api/auth/me" && method === "GET") {
-      const u = dbMode === "mysql" ? await dbQuery("SELECT id, name, role FROM users WHERE id = ?", [sess.userId]) : users.find(u => u.id === sess.userId);
-      return sendJson(res, u ? { id: u.id, name: u.name, role: u.role } : { error: "Not logged in" }, 401);
+      const u = dbMode === "mysql"
+        ? await dbQuery(
+            "SELECT id, name, role FROM users WHERE id = ?",
+            [sess.userId]
+          )
+        : users.find(u => u.id === sess.userId);
+
+      const user = dbMode === "mysql" ? u[0] : u;
+
+      if (!user) {
+        return sendJson(res, { error: "Not logged in" }, 401);
+      }
+
+      return sendJson(res, {
+        id: user.id,
+        name: user.name,
+        role: user.role
+      }, 200);
     }
 
     // Profile: Get
     if (pathname === "/api/users/me" && method === "GET") {
       const u = dbMode === "mysql" ? await dbQuery("SELECT id, name, email, role, phone, github_username FROM users WHERE id = ?", [sess.userId]) : users.find(u => u.id === sess.userId);
-      return sendJson(res, u || {});
+      const user = dbMode === "mysql" ? (u && u[0]) : u;
+      return sendJson(res, user || {});
     }
 
     // Profile: Update
     if (pathname === "/api/users/profile" && method === "PUT") {
-      if (dbMode === "mysql") await dbQuery("UPDATE users SET name=?, phone=?, github_username=? WHERE id=?", [json.name, json.phone, json.github, sess.userId]);
-      else { const u = users.find(u => u.id === sess.userId); if (u) { u.name = json.name; u.phone = json.phone; u.github_username = json.github; } }
-      sess.name = json.name; return sendJson(res, { success: true });
+      try {
+        if (dbMode === "mysql") await dbQuery("UPDATE users SET name=?, phone=?, github_username=? WHERE id=?", [json.name, json.phone, json.github, sess.userId]);
+        else { const u = users.find(u => u.id === sess.userId); if (u) { u.name = json.name; u.phone = json.phone; u.github_username = json.github; } }
+        sess.name = json.name; return sendJson(res, { success: true });
+      } catch (err) {
+        console.error("[server] Profile update error:", err);
+        return sendJson(res, { error: "Database error: " + err.message }, 500);
+      }
     }
 
     // Change Password
     if (pathname === "/api/users/change-password" && method === "POST") {
-      const curr = json.current_password;
-      const newPw = json.new_password;
-      if (!curr || !newPw) return sendJson(res, { error: "Missing fields" }, 400);
-      if (newPw.length < 6) return sendJson(res, { error: "Password must be at least 6 characters" }, 400);
-      const user = dbMode === "mysql" ? await dbQuery("SELECT password FROM users WHERE id=?", [sess.userId]) : users.find(u => u.id === sess.userId);
-      if (!user || (dbMode === "mysql" ? user[0] : user)?.password !== hashPassword(curr)) return sendJson(res, { error: "Current password is incorrect" }, 401);
-      const hashed = hashPassword(newPw);
-      if (dbMode === "mysql") { await dbQuery("UPDATE users SET password=? WHERE id=?", [hashed, sess.userId]); } else { const u = users.find(u => u.id === sess.userId); u.password = hashed; }
-      return sendJson(res, { success: true });
+      try {
+        const curr = json.current_password;
+        const newPw = json.new_password;
+        if (!curr || !newPw) return sendJson(res, { error: "Missing fields" }, 400);
+        if (newPw.length < 6) return sendJson(res, { error: "Password must be at least 6 characters" }, 400);
+        const user = dbMode === "mysql" ? await dbQuery("SELECT password FROM users WHERE id=?", [sess.userId]) : users.find(u => u.id === sess.userId);
+        if (!user || (dbMode === "mysql" ? user[0] : user)?.password !== hashPassword(curr)) return sendJson(res, { error: "Current password is incorrect" }, 401);
+        const hashed = hashPassword(newPw);
+        if (dbMode === "mysql") { await dbQuery("UPDATE users SET password=? WHERE id=?", [hashed, sess.userId]); } else { const u = users.find(u => u.id === sess.userId); u.password = hashed; }
+        return sendJson(res, { success: true });
+      } catch (err) {
+        console.error("[server] Change password error:", err);
+        return sendJson(res, { error: "Database error: " + err.message }, 500);
+      }
     }
 
     // Courses: GET
@@ -227,11 +326,23 @@ const server = http.createServer(async (req, res) => {
     }
 
     // Courses: POST
-    if (pathname === "/api/courses" && method === "POST" && sess.role === "teacher") {
-      const c = { id: genId(), course_code: json.code, course_name: json.name, semester: json.semester, teacher_id: sess.userId };
-      if (dbMode === "mysql") { await dbQuery("INSERT INTO courses (course_code, course_name, semester, teacher_id) VALUES (?, ?, ?, ?)", [json.code, json.name, json.semester, sess.userId]); }
-      else courses.push(c);
-      return sendJson(res, c);
+    if (pathname === "/api/courses" && method === "POST") { if (sess.role !== "teacher") return sendJson(res, { error: "Forbidden" }, 403);
+      try {
+        const c = { id: genId(), course_code: json.code, course_name: json.name, semester: json.semester, teacher_id: sess.userId };
+        if (dbMode === "mysql") {
+          const cr = await dbQuery.transactional(async (conn) => {
+            const [result] = await conn.execute("INSERT INTO courses (course_code, course_name, semester, teacher_id) VALUES (?, ?, ?, ?)", [json.code, json.name, json.semester, sess.userId]);
+            return { insertId: result.insertId };
+          });
+          c.id = cr.insertId;
+        } else {
+          courses.push(c);
+        }
+        return sendJson(res, c);
+      } catch (err) {
+        console.error("[server] Course creation error:", err);
+        return sendJson(res, { error: "Database error: " + err.message }, 500);
+      }
     }
 
     // Course: GET (single course detail)
@@ -255,10 +366,15 @@ const server = http.createServer(async (req, res) => {
 
     // Course students: POST
     if (pathname.startsWith("/api/courses/") && pathname.endsWith("/students") && method === "POST" && sess.role === "teacher") {
-      const courseId = pathname.split("/")[3];
-      if (dbMode === "mysql") { await dbQuery("INSERT IGNORE INTO course_students (course_id, student_id) VALUES (?, ?)", [courseId, json.student_id]); }
-      else { if (!course_students.find(cs => cs.course_id == courseId && cs.student_id == json.student_id)) course_students.push({ course_id: courseId, student_id: json.student_id }); }
-      return sendJson(res, { success: true });
+      try {
+        const courseId = pathname.split("/")[3];
+        if (dbMode === "mysql") { await dbQuery("INSERT IGNORE INTO course_students (course_id, student_id) VALUES (?, ?)", [courseId, json.student_id]); }
+        else { if (!course_students.find(cs => cs.course_id == courseId && cs.student_id == json.student_id)) course_students.push({ course_id: courseId, student_id: json.student_id }); }
+        return sendJson(res, { success: true });
+      } catch (err) {
+        console.error("[server] Course students add error:", err);
+        return sendJson(res, { error: "Database error: " + err.message }, 500);
+      }
     }
 
     // Projects: GET
@@ -275,139 +391,404 @@ const server = http.createServer(async (req, res) => {
       if (dbMode === "mysql") {
         const occupied = await dbQuery("SELECT DISTINCT student_id FROM project_members pm JOIN projects p ON pm.project_id=p.id WHERE p.teacher_id=?", [sess.userId]);
         const occupiedTask = await dbQuery("SELECT DISTINCT student_id FROM task_assignments ta JOIN tasks t ON ta.task_id=t.id WHERE t.teacher_id=? AND ta.status NOT IN ('Completed', 'Overdue')", [sess.userId]);
-        const ids = new Set();
-        (occupied || []).forEach(r => ids.add(r.student_id));
-        (occupiedTask || []).forEach(r => ids.add(r.student_id));
-        return sendJson(res, Array.from(ids));
+        const projectIds = new Set();
+        const taskIds = new Set();
+        (occupied || []).forEach(r => projectIds.add(r.student_id));
+        (occupiedTask || []).forEach(r => taskIds.add(r.student_id));
+        return sendJson(res, { project_members: Array.from(projectIds), task_assigned: Array.from(taskIds) });
       }
-      const ids = new Set();
-      project_members.forEach(pm => { const p = projects.find(x => x.id == pm.project_id && x.teacher_id == sess.userId); if (p) ids.add(pm.student_id); });
-      task_assignments.forEach(ta => { const t = tasks.find(x => x.id == ta.task_id && x.teacher_id == sess.userId); if (t && ta.status !== "Completed" && ta.status !== "Overdue") ids.add(ta.student_id); });
-      return sendJson(res, Array.from(ids));
+      const projectIds = new Set();
+      const taskIds = new Set();
+      project_members.forEach(pm => { const p = projects.find(x => x.id == pm.project_id && x.teacher_id == sess.userId); if (p) projectIds.add(pm.student_id); });
+      task_assignments.forEach(ta => { const t = tasks.find(x => x.id == ta.task_id && x.teacher_id == sess.userId); if (t && ta.status !== "Completed" && ta.status !== "Overdue") taskIds.add(ta.student_id); });
+      return sendJson(res, { project_members: Array.from(projectIds), task_assigned: Array.from(taskIds) });
     }
 
     // Projects: POST
-    if (pathname === "/api/projects" && method === "POST" && sess.role === "teacher") {
-      const p = { id: genId(), title: json.title, description: json.description, course_id: json.course_id, teacher_id: sess.userId, status: "Active", group_name: json.group_name || "Group" };
-      if (dbMode === "mysql") { await dbQuery("INSERT INTO projects (title, description, course_id, teacher_id, status) VALUES (?, ?, ?, ?, 'Active')", [json.title, json.description, json.course_id, sess.userId]); }
-      else projects.push(p);
-      return sendJson(res, p);
+    if (pathname === "/api/projects" && method === "POST") { if (sess.role !== "teacher") return sendJson(res, { error: "Forbidden" }, 403);
+      try {
+        const p = { id: genId(), title: json.title, description: json.description, course_id: json.course_id, teacher_id: sess.userId, status: "Active", group_name: json.group_name || "Group" };
+        if (dbMode === "mysql") {
+          const pr = await dbQuery.transactional(async (conn) => {
+            const [result] = await conn.execute("INSERT INTO projects (title, description, course_id, teacher_id, status) VALUES (?, ?, ?, ?, 'Active')", [json.title, json.description, json.course_id, sess.userId]);
+            return { insertId: result.insertId };
+          });
+          p.id = pr.insertId;
+        } else {
+          projects.push(p);
+        }
+        return sendJson(res, p);
+      } catch (err) {
+        console.error("[server] Project creation error:", err);
+        return sendJson(res, { error: "Database error: " + err.message }, 500);
+      }
     }
 
     // Project members: POST
     if (pathname.startsWith("/api/projects/") && pathname.endsWith("/members") && method === "POST" && sess.role === "teacher") {
+      try {
       const projectId = pathname.split("/")[3];
       const errors = [];
       if (dbMode === "mysql") {
         for (const m of json.members) {
-          const existing = await dbQuery("SELECT p.id, p.title FROM project_members pm JOIN projects p ON pm.project_id=p.id WHERE pm.student_id=? AND p.teacher_id=? AND pm.project_id!=?", [m.student_id, sess.userId, projectId]);
-          if (existing && existing.length) { errors.push({ student_id: m.student_id, error: "Already in project: " + existing[0].title }); continue; }
+          const sameCourse = await dbQuery("SELECT p.id, p.title FROM project_members pm JOIN projects p ON pm.project_id=p.id WHERE pm.student_id=? AND p.course_id=(SELECT course_id FROM projects WHERE id=?)", [m.student_id, projectId]);
+          if (sameCourse && sameCourse.length) { errors.push({ student_id: m.student_id, error: "Already in project: " + sameCourse[0].title + " (same course)" }); continue; }
           await dbQuery("INSERT INTO project_members (project_id, student_id, role) VALUES (?, ?, ?)", [projectId, m.student_id, m.isLeader ? "Leader" : "Member"]);
         }
       } else {
         for (const m of json.members) {
-          const existing = project_members.find(pm => pm.student_id == m.student_id && projects.find(p => p.id == pm.project_id && p.teacher_id == sess.userId && p.id != projectId));
-          if (existing) { errors.push({ student_id: m.student_id, error: "Already in project: " + (projects.find(p => p.id == existing.project_id)?.title || "unknown") }); continue; }
+          const projCourseId = projects.find(p => p.id == projectId)?.course_id;
+          const sameCourseInMem = project_members.find(pm => pm.student_id == m.student_id && projects.find(p => p.id == pm.project_id && p.course_id == projCourseId && p.id != projectId));
+          if (sameCourseInMem) { errors.push({ student_id: m.student_id, error: "Already in project: " + (projects.find(p => p.id == sameCourseInMem.project_id)?.title || "unknown") + " (same course)" }); continue; }
           if (!project_members.find(pm => pm.project_id == projectId && pm.student_id == m.student_id)) project_members.push({ project_id: projectId, student_id: m.student_id, role: m.isLeader ? "Leader" : "Member" });
         }
       }
       if (errors.length) return sendJson(res, { success: false, errors });
       return sendJson(res, { success: true });
+      } catch (err) {
+        console.error("[server] Project members error:", err);
+        return sendJson(res, { error: "Database error: " + err.message }, 500);
+      }
     }
 
     // Project members: GET
     if (pathname.startsWith("/api/projects/") && pathname.endsWith("/members") && method === "GET") {
       const projectId = pathname.split("/")[3];
-      if (dbMode === "mysql") { const m = await dbQuery("SELECT pm.*, u.name, u.email FROM project_members pm JOIN users u ON pm.student_id=u.id WHERE pm.project_id=?", [projectId]); return sendJson(res, m); }
+      if (dbMode === "mysql") {
+        // Authorization: teacher must own the project's course, student must be a member
+        if (sess.role === "teacher") {
+          const owns = await dbQuery("SELECT 1 FROM projects p JOIN courses c ON p.course_id=c.id WHERE p.id=? AND c.teacher_id=?", [projectId, sess.userId]);
+          if (!owns || !owns.length) return sendJson(res, { error: "Forbidden" }, 403);
+        } else {
+          const isMember = await dbQuery("SELECT 1 FROM project_members pm JOIN projects p ON pm.project_id=p.id WHERE pm.project_id=? AND pm.student_id=?", [projectId, sess.userId]);
+          if (!isMember || !isMember.length) return sendJson(res, { error: "Forbidden" }, 403);
+        }
+        const m = await dbQuery("SELECT pm.*, u.name, u.email FROM project_members pm JOIN users u ON pm.student_id=u.id WHERE pm.project_id=?", [projectId]);
+        return sendJson(res, m);
+      }
+      // In-memory authorization
+      const proj = projects.find(p => p.id == projectId);
+      if (!proj) return sendJson(res, { error: "Not found" }, 404);
+      if (sess.role === "teacher" && proj.teacher_id != sess.userId) return sendJson(res, { error: "Forbidden" }, 403);
+      if (sess.role === "student") {
+        const isMember = project_members.some(pm => pm.project_id == projectId && pm.student_id == sess.userId);
+        if (!isMember) return sendJson(res, { error: "Forbidden" }, 403);
+      }
       return sendJson(res, project_members.filter(pm => pm.project_id == projectId));
+    }
+
+    // Project tasks: GET
+    if (pathname.startsWith("/api/projects/") && pathname.endsWith("/tasks") && method === "GET") {
+      const projectId = pathname.split("/")[3];
+      if (dbMode === "mysql") {
+        // Authorization: teacher must own the project's course, student must be a member
+        if (sess.role === "teacher") {
+          const owns = await dbQuery("SELECT 1 FROM projects p JOIN courses c ON p.course_id=c.id WHERE p.id=? AND c.teacher_id=?", [projectId, sess.userId]);
+          if (!owns || !owns.length) return sendJson(res, { error: "Forbidden" }, 403);
+        } else {
+          const isMember = await dbQuery("SELECT 1 FROM project_members pm JOIN projects p ON pm.project_id=p.id WHERE pm.project_id=? AND pm.student_id=? AND p.teacher_id IN (SELECT id FROM users WHERE role='teacher')", [projectId, sess.userId]);
+          if (!isMember || !isMember.length) return sendJson(res, { error: "Forbidden" }, 403);
+        }
+        const t = await dbQuery("SELECT t.*, c.course_code FROM tasks t JOIN courses c ON t.course_id=c.id WHERE t.project_id=? ORDER BY t.created_at DESC", [projectId]);
+        return sendJson(res, t || []);
+      }
+      // In-memory: same authorization
+      const proj = projects.find(p => p.id == projectId);
+      if (!proj) return sendJson(res, { error: "Not found" }, 404);
+      if (sess.role === "teacher" && proj.teacher_id != sess.userId) return sendJson(res, { error: "Forbidden" }, 403);
+      if (sess.role === "student") {
+        const isMember = project_members.some(pm => pm.project_id == projectId && pm.student_id == sess.userId);
+        if (!isMember) return sendJson(res, { error: "Forbidden" }, 403);
+      }
+      return sendJson(res, tasks.filter(t => t.project_id == projectId));
     }
 
     // Tasks: GET
     if (pathname === "/api/tasks" && method === "GET") {
       if (dbMode === "mysql") {
-        if (sess.role === "teacher") { const t = await dbQuery("SELECT t.*, c.course_code FROM tasks t JOIN courses c ON t.course_id=c.id WHERE t.teacher_id=? ORDER BY t.created_at DESC", [sess.userId]); return sendJson(res, t); }
-        const t = await dbQuery("SELECT ta.*, t.title, t.type, t.priority, t.description, p.title as project_name, c.course_code FROM task_assignments ta JOIN tasks t ON ta.task_id=t.id JOIN courses c ON t.course_id=c.id LEFT JOIN projects p ON ta.project_id=p.id WHERE ta.student_id=? ORDER BY ta.deadline ASC", [sess.userId]); return sendJson(res, t);
+        if (sess.role === "teacher") { const t = await dbQuery("SELECT t.id, t.title, t.type, t.assignment_type, t.project_id, t.course_id, t.teacher_id, t.priority, t.status, t.deadline, t.created_at, c.course_code FROM tasks t JOIN courses c ON t.course_id=c.id WHERE t.teacher_id=? ORDER BY t.created_at DESC", [sess.userId]); return sendJson(res, t); }
+        const t = await dbQuery("SELECT ta.*, t.title, t.type, t.assignment_type, t.project_id, t.priority, t.description, p.title as project_name, c.course_code FROM task_assignments ta JOIN tasks t ON ta.task_id=t.id JOIN courses c ON t.course_id=c.id LEFT JOIN projects p ON ta.project_id=p.id WHERE ta.student_id=? ORDER BY ta.deadline ASC", [sess.userId]); return sendJson(res, t);
       }
       if (sess.role === "teacher") return sendJson(res, tasks.filter(t => t.teacher_id === sess.userId));
-      return sendJson(res, task_assignments.filter(ta => ta.student_id === sess.userId));
+      // Student: join task_assignments with tasks and projects
+      const myAssigns = task_assignments.filter(ta => ta.student_id === sess.userId);
+      const result = myAssigns.map(ta => {
+        const t = tasks.find(t => t.id == ta.task_id);
+        const p = projects.find(p => p.id == ta.project_id);
+        const c = courses.find(c => c.id == (t?.course_id));
+        return { ...ta, title: t?.title, type: t?.type, assignment_type: t?.assignment_type, priority: t?.priority, description: t?.description, project_name: p?.title, course_code: c?.course_code };
+      });
+      return sendJson(res, result);
     }
 
     // Tasks: POST
-    if (pathname === "/api/tasks" && method === "POST" && sess.role === "teacher") {
-      const t = { id: genId(), title: json.title, description: json.description, type: json.type, course_id: json.course_id, teacher_id: sess.userId, priority: json.priority || "Medium", deadline: json.deadline, status: "Active" };
-      if (dbMode === "mysql") { await dbQuery("INSERT INTO tasks (title, description, type, course_id, teacher_id, priority, deadline) VALUES (?, ?, ?, ?, ?, ?, ?)", [json.title, json.description, json.type, json.course_id, sess.userId, json.priority || "Medium", json.deadline || null]); const newTaskId = (await dbQuery("SELECT LAST_INSERT_ID()"))[0]["LAST_INSERT_ID()"]; t.id = newTaskId; await dbQuery("INSERT INTO activity_logs (user_id, action, entity_type, entity_id, logged_at) VALUES (?, ?, ?, ?, NOW())", [sess.userId, "Created task: " + json.title, "task", newTaskId]); }
+    if (pathname === "/api/tasks" && method === "POST") { if (sess.role !== "teacher") return sendJson(res, { error: "Forbidden" }, 403);
+      const at = (json.assignment_type || "Individual").trim();
+      // Validate ENUM: must be one of the three allowed values
+      const validTypes = ["Individual", "Group Shared", "Group Divided"];
+      if (!validTypes.includes(at)) {
+        return sendJson(res, { error: "Invalid assignment_type. Must be: Individual, Group Shared, or Group Divided" }, 400);
+      }
+      // Validate: Group Shared / Group Divided require project_id
+      if ((at === "Group Shared" || at === "Group Divided") && !json.project_id) {
+        return sendJson(res, { error: at + " tasks require a project_id" }, 400);
+      }
+      // Validate: project must belong to the same course
+      if (json.project_id) {
+        const projCheck = dbMode === "mysql"
+          ? await dbQuery("SELECT course_id FROM projects WHERE id=?", [json.project_id])
+          : projects.find(p => p.id == json.project_id);
+        if (!projCheck || (Array.isArray(projCheck) && !projCheck.length)) {
+          return sendJson(res, { error: "Project not found" }, 404);
+        }
+        const projCourseId = Array.isArray(projCheck) ? projCheck[0].course_id : projCheck.course_id;
+        if (projCourseId != json.course_id) {
+          return sendJson(res, { error: "Project does not belong to the selected course" }, 400);
+        }
+      }
+      const t = { id: genId(), title: json.title, description: json.description, type: json.type, assignment_type: at, project_id: json.project_id || null, course_id: json.course_id, teacher_id: sess.userId, priority: json.priority || "Medium", deadline: json.deadline, status: "Active" };
+      if (dbMode === "mysql") { await dbQuery.transactional(async (conn) => { const [ir] = await conn.execute("INSERT INTO tasks (title, description, type, assignment_type, project_id, course_id, teacher_id, priority, deadline) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", [json.title, json.description, json.type, at, json.project_id || null, json.course_id, sess.userId, json.priority || "Medium", json.deadline || null]); t.id = ir.insertId; await conn.execute("INSERT INTO activity_logs (user_id, action, entity_type, entity_id, logged_at) VALUES (?, ?, ?, ?, NOW())", [sess.userId, "Created task: " + json.title, "task", t.id]); }); }
       else tasks.push(t);
       return sendJson(res, t);
     }
 
     // Tasks/assign: POST
     if (pathname === "/api/tasks/assign" && method === "POST" && sess.role === "teacher") {
-      const { task_id, student_id, weight_percent, deadline, project_id } = json;
+      const { task_id, student_id, weight_percent, deadline, project_id, assignment_type } = json;
       if (isNaN(task_id) || task_id < 1) return sendJson(res, { error: "Invalid task_id" }, 400);
-      if (isNaN(student_id) || student_id < 1) return sendJson(res, { error: "Invalid student_id" }, 400);
-      if (dbMode === "mysql") {
-        const existing = await dbQuery("SELECT ta.id, t.title FROM task_assignments ta JOIN tasks t ON ta.task_id=t.id WHERE ta.student_id=? AND ta.status != 'Completed' AND ta.status != 'Overdue'", [parseInt(student_id)]);
-        if (existing && existing.length) return sendJson(res, { error: "Student is already assigned to task: " + existing[0].title }, 409);
-        try {
-          await dbQuery("INSERT INTO task_assignments (task_id, student_id, weight_percent, deadline, project_id, status) VALUES (?, ?, ?, ?, ?, 'Not Started')", [parseInt(task_id), parseInt(student_id), parseInt(weight_percent) || 0, deadline || null, project_id ? parseInt(project_id) : null]);
-        } catch(dbErr) {
-          console.error("[server] Assignment INSERT error:", dbErr.message);
-          return sendJson(res, { error: dbErr.message }, 500);
-        }
-      } else {
-        const existing = task_assignments.find(ta => ta.student_id == student_id && ta.status !== "Completed" && ta.status !== "Overdue");
-        if (existing) { const task = tasks.find(t => t.id == existing.task_id); return sendJson(res, { error: "Student is already assigned to task: " + (task?.title || "unknown") }, 409); }
-        try {
-          task_assignments.push({ id: genId(), task_id, student_id, weight_percent: weight_percent || 0, deadline: deadline || null, project_id: project_id || null, status: 'Not Started' });
-        } catch(dbErr) {
-          console.error("[server] Assignment INSERT error:", dbErr.message);
-          return sendJson(res, { error: dbErr.message }, 500);
+
+      const taskRows = dbMode === "mysql"
+        ? await dbQuery("SELECT * FROM tasks WHERE id=?", [task_id])
+        : tasks.filter(t => t.id == task_id);
+      const task = Array.isArray(taskRows) ? taskRows[0] : taskRows;
+      if (!task) return sendJson(res, { error: "Task not found" }, 404);
+
+      const resolvedType = assignment_type || task.assignment_type || "Individual";
+      const resolvedProjectId = project_id || task.project_id;
+
+      async function assignSingle(sid) {
+        if (dbMode === "mysql") {
+          try { await dbQuery("INSERT INTO task_assignments (task_id, student_id, weight_percent, deadline, project_id, status) VALUES (?, ?, ?, ?, ?, 'Not Started')", [parseInt(task_id), sid, parseInt(weight_percent) || 0, deadline || null, resolvedProjectId ? parseInt(resolvedProjectId) : null]); return { success: true }; } catch(e) { console.error("[server] Assignment INSERT error:", e.message); if (e.code === 'ER_DUP_ENTRY') return { error: "Student is already assigned to this task" }; return { error: e.message }; }
+        } else {
+          const existing = task_assignments.find(ta => ta.student_id == sid && ta.task_id == task_id && ta.status !== "Completed" && ta.status !== "Overdue");
+          if (existing) return Promise.resolve({ error: "Student is already assigned to task: " + (task.title || "unknown") });
+          task_assignments.push({ id: genId(), task_id, student_id: sid, weight_percent: weight_percent || 0, deadline: deadline || null, project_id: resolvedProjectId || null, status: 'Not Started' });
+          return Promise.resolve({ success: true });
         }
       }
-      return sendJson(res, { success: true });
+
+      if (resolvedType === "Individual") {
+        if (isNaN(student_id) || student_id < 1) return sendJson(res, { error: "Invalid student_id" }, 400);
+        const r = await assignSingle(parseInt(student_id));
+        if (r && r.error) return sendJson(res, { error: r.error }, 409);
+        return sendJson(res, { success: true });
+      }
+
+      if (resolvedType === "Group Shared") {
+        if (!resolvedProjectId) return sendJson(res, { error: "Group Shared task must have a project" }, 400);
+        // Verify project belongs to the task's course
+        const projCheck = dbMode === "mysql"
+          ? await dbQuery("SELECT course_id, teacher_id FROM projects WHERE id=?", [resolvedProjectId])
+          : projects.find(p => p.id == resolvedProjectId);
+        if (!projCheck || (Array.isArray(projCheck) && !projCheck.length)) {
+          return sendJson(res, { error: "Project not found" }, 404);
+        }
+        const projCourseId = Array.isArray(projCheck) ? projCheck[0].course_id : projCheck.course_id;
+        const projTeacherId = Array.isArray(projCheck) ? projCheck[0].teacher_id : projCheck.teacher_id;
+        if (projCourseId != task.course_id) {
+          return sendJson(res, { error: "Project does not belong to this task's course" }, 400);
+        }
+        if (projTeacherId != sess.userId) {
+          return sendJson(res, { error: "You do not own this project" }, 403);
+        }
+        const memberRows = dbMode === "mysql"
+          ? await dbQuery("SELECT student_id FROM project_members WHERE project_id=?", [resolvedProjectId])
+          : project_members.filter(pm => pm.project_id == resolvedProjectId);
+        const memberIds = (memberRows || []).map(r => r.student_id);
+        if (!memberIds.length) return sendJson(res, { error: "No members found in project" }, 404);
+        const results = [];
+        for (const sid of memberIds) {
+          const r = await assignSingle(sid);
+          results.push(r);
+        }
+        const errors = results.filter(r => r && r.error);
+        if (errors.length) return sendJson(res, { success: false, errors });
+        return sendJson(res, { success: true, assigned_count: memberIds.length });
+      }
+
+      if (resolvedType === "Group Divided") {
+        if (!resolvedProjectId) return sendJson(res, { error: "Group Divided task must have a project" }, 400);
+        const memberRows = dbMode === "mysql"
+          ? await dbQuery("SELECT pm.student_id, u.name FROM project_members pm JOIN users u ON pm.student_id=u.id WHERE pm.project_id=?", [resolvedProjectId])
+          : project_members.filter(pm => pm.project_id == resolvedProjectId).map(pm => { const u = users.find(u => u.id == pm.student_id); return { student_id: pm.student_id, name: u?.name || "Student" }; });
+        const members = memberRows || [];
+        if (!members.length) return sendJson(res, { error: "No members found in project" }, 404);
+        // Create a sub-task for each member
+        const subTaskResults = [];
+        for (const member of members) {
+          const subTask = {
+            id: genId(),
+            title: json.sub_task_title || (task.title + " (" + member.name + ")"),
+            description: json.sub_task_description || task.description,
+            type: json.sub_task_type || task.type,
+            assignment_type: "Individual",
+            project_id: resolvedProjectId,
+            course_id: task.course_id,
+            teacher_id: sess.userId,
+            priority: task.priority || "Medium",
+            deadline: json.deadline || task.deadline,
+            status: "Active"
+          };
+          if (dbMode === "mysql") {
+            try {
+              await dbQuery.transactional(async (conn) => {
+                const [ir] = await conn.execute("INSERT INTO tasks (title, description, type, assignment_type, project_id, course_id, teacher_id, priority, deadline, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Active')",
+                  [subTask.title, subTask.description, subTask.type, subTask.assignment_type, subTask.project_id, subTask.course_id, subTask.teacher_id, subTask.priority, subTask.deadline]);
+                const newSubId = ir.insertId;
+                await conn.execute("INSERT INTO task_assignments (task_id, student_id, weight_percent, deadline, project_id, status) VALUES (?, ?, ?, ?, ?, 'Not Started')",
+                  [newSubId, member.student_id, parseInt(weight_percent) || 0, json.deadline || task.deadline || null, resolvedProjectId]);
+                subTaskResults.push({ success: true, sub_task_id: newSubId, student_id: member.student_id });
+              });
+            } catch(e) {
+              console.error("[server] Group Divided sub-task error:", e.message);
+              subTaskResults.push({ error: e.message, student_id: member.student_id });
+            }
+          } else {
+            tasks.push(subTask);
+            task_assignments.push({ id: genId(), task_id: subTask.id, student_id: member.student_id, weight_percent: weight_percent || 0, deadline: json.deadline || task.deadline || null, project_id: resolvedProjectId, status: 'Not Started' });
+            subTaskResults.push({ success: true, sub_task_id: subTask.id, student_id: member.student_id });
+          }
+        }
+        const errors = subTaskResults.filter(r => r.error);
+        if (errors.length) return sendJson(res, { success: false, errors: errors.map(e => ({ student_id: e.student_id, error: e.error })) });
+        return sendJson(res, { success: true, assigned_count: members.length, sub_tasks: subTaskResults.filter(r => !r.error) });
+      }
+
+      return sendJson(res, { error: "Unknown assignment_type" }, 400);
     }
 
     // Tasks/assign: GET
     if (pathname === "/api/tasks/assign" && method === "GET") {
+      if (dbMode === "mysql") {
+        const ta = await dbQuery("SELECT ta.*, u.name as student_name FROM task_assignments ta JOIN users u ON ta.student_id=u.id ORDER BY ta.created_at DESC");
+        return sendJson(res, ta || []);
+      }
       return sendJson(res, task_assignments);
     }
 
     // Tasks/assign/:id: PUT
     if (pathname.match(/^\/api\/tasks\/assign\/\d+$/) && method === "PUT" && sess.role === "teacher") {
-      const assignId = pathname.split("/")[4];
-      if (dbMode === "mysql") { await dbQuery("UPDATE task_assignments SET weight_percent=?, deadline=?, status=? WHERE id=?", [json.weight_percent, json.deadline, json.status, assignId]); const ta = await dbQuery("SELECT * FROM task_assignments WHERE id=?", [assignId]); return sendJson(res, ta[0]); }
-      else { const ta = task_assignments.find(t => t.id == assignId); if (ta) { Object.assign(ta, json); } return sendJson(res, ta); }
+      try {
+        const assignId = pathname.split("/")[4];
+        if (dbMode === "mysql") { await dbQuery("UPDATE task_assignments SET weight_percent=?, deadline=?, status=? WHERE id=?", [json.weight_percent, json.deadline ?? null, json.status, assignId]); const ta = await dbQuery("SELECT * FROM task_assignments WHERE id=?", [assignId]); return sendJson(res, ta[0]); }
+        else { const ta = task_assignments.find(t => t.id == assignId); if (ta) { Object.assign(ta, json); } return sendJson(res, ta); }
+      } catch (err) {
+        console.error("[server] Tasks assign update error:", err);
+        return sendJson(res, { error: "Database error: " + err.message }, 500);
+      }
     }
 
     // Tasks/assign/:id: DELETE
     if (pathname.match(/^\/api\/tasks\/assign\/\d+$/) && method === "DELETE" && sess.role === "teacher") {
-      const assignId = pathname.split("/")[4];
-      if (dbMode === "mysql") { await dbQuery("DELETE FROM task_assignments WHERE id=?", [assignId]); }
-      else { const idx = task_assignments.findIndex(t => t.id == assignId); if (idx !== -1) task_assignments.splice(idx, 1); }
-      return sendJson(res, { success: true });
+      try {
+        const assignId = pathname.split("/")[4];
+        if (dbMode === "mysql") { await dbQuery("DELETE FROM task_assignments WHERE id=?", [assignId]); }
+        else { const idx = task_assignments.findIndex(t => t.id == assignId); if (idx !== -1) task_assignments.splice(idx, 1); }
+        return sendJson(res, { success: true });
+      } catch (err) {
+        console.error("[server] Tasks assign delete error:", err);
+        return sendJson(res, { error: "Database error: " + err.message }, 500);
+      }
+    }
+
+    // Task: GET (single)
+    if (pathname.match(/^\/api\/tasks\/\d+$/) && method === "GET") {
+      const taskId = pathname.split("/")[3];
+      if (dbMode === "mysql") {
+        const t = await dbQuery("SELECT t.*, c.course_code, c.course_name FROM tasks t JOIN courses c ON t.course_id=c.id WHERE t.id=?", [taskId]);
+        if (!t || !t.length) return sendJson(res, { error: "Not found" }, 404);
+        // Authorization
+        if (sess.role === "teacher") {
+          const owns = await dbQuery("SELECT 1 FROM tasks WHERE id=? AND teacher_id=?", [taskId, sess.userId]);
+          if (!owns || !owns.length) return sendJson(res, { error: "Forbidden" }, 403);
+        } else {
+          const isAssigned = await dbQuery("SELECT 1 FROM task_assignments WHERE task_id=? AND student_id=?", [taskId, sess.userId]);
+          if (!isAssigned || !isAssigned.length) return sendJson(res, { error: "Forbidden" }, 403);
+        }
+        return sendJson(res, t[0]);
+      }
+      const t = tasks.find(t => t.id == taskId);
+      if (!t) return sendJson(res, { error: "Not found" }, 404);
+      if (sess.role === "teacher" && t.teacher_id != sess.userId) return sendJson(res, { error: "Forbidden" }, 403);
+      if (sess.role === "student") {
+        const isAssigned = task_assignments.some(ta => ta.task_id == taskId && ta.student_id == sess.userId);
+        if (!isAssigned) return sendJson(res, { error: "Forbidden" }, 403);
+      }
+      return sendJson(res, t);
     }
 
     // Tasks/:id: PUT (update task)
     if (pathname.match(/^\/api\/tasks\/\d+$/) && method === "PUT" && sess.role === "teacher") {
       const taskId = pathname.split("/")[3];
-      if (dbMode === "mysql") { await dbQuery("UPDATE tasks SET title=?, description=?, type=?, priority=?, status=?, deadline=? WHERE id=? AND teacher_id=?", [json.title, json.description, json.type, json.priority, json.status, json.deadline, taskId, sess.userId]); return sendJson(res, { id: taskId, ...json }); }
-      else { const t = tasks.find(t => t.id == taskId); if (t) Object.assign(t, json); return sendJson(res, t); }
+      // Validate: if assignment_type is Group Shared or Group Divided, project_id is required
+      const newAt = (json.assignment_type || "").trim();
+      const validTypes = ["Individual", "Group Shared", "Group Divided"];
+      if (json.assignment_type && !validTypes.includes(newAt)) {
+        return sendJson(res, { error: "Invalid assignment_type. Must be: Individual, Group Shared, or Group Divided" }, 400);
+      }
+      if ((newAt === "Group Shared" || newAt === "Group Divided") && !json.project_id) {
+        return sendJson(res, { error: newAt + " tasks require a project_id" }, 400);
+      }
+      // Validate: if project_id provided, it must belong to the same course
+      if (json.project_id) {
+        const currentTask = dbMode === "mysql"
+          ? await dbQuery("SELECT course_id FROM tasks WHERE id=?", [taskId])
+          : tasks.find(t => t.id == taskId);
+        if (!currentTask || (Array.isArray(currentTask) && !currentTask.length)) return sendJson(res, { error: "Task not found" }, 404);
+        const currentCourseId = Array.isArray(currentTask) ? currentTask[0].course_id : currentTask.course_id;
+        if (dbMode === "mysql") {
+          const proj = await dbQuery("SELECT course_id FROM projects WHERE id=?", [json.project_id]);
+          if (!proj || !proj.length) return sendJson(res, { error: "Project not found" }, 404);
+          if (proj[0].course_id != currentCourseId) return sendJson(res, { error: "Project does not belong to this task's course" }, 400);
+        } else {
+          const proj = projects.find(p => p.id == json.project_id);
+          if (!proj) return sendJson(res, { error: "Project not found" }, 404);
+          if (proj.course_id != currentCourseId) return sendJson(res, { error: "Project does not belong to this task's course" }, 400);
+        }
+      }
+      try {
+        if (dbMode === "mysql") { await dbQuery("UPDATE tasks SET title=?, description=?, type=?, assignment_type=?, project_id=?, priority=?, status=?, deadline=? WHERE id=? AND teacher_id=?", [json.title, json.description, json.type, json.assignment_type, json.project_id, json.priority, json.status, json.deadline, taskId, sess.userId]); return sendJson(res, { id: taskId, ...json }); }
+        else { const t = tasks.find(t => t.id == taskId); if (t) Object.assign(t, json); return sendJson(res, t); }
+      } catch (err) {
+        console.error("[server] Task update error:", err);
+        return sendJson(res, { error: "Database error: " + err.message }, 500);
+      }
     }
 
     // Tasks/:id: DELETE
     if (pathname.match(/^\/api\/tasks\/\d+$/) && method === "DELETE" && sess.role === "teacher") {
-      const taskId = pathname.split("/")[3];
-      if (dbMode === "mysql") { await dbQuery("DELETE FROM tasks WHERE id=? AND teacher_id=?", [taskId, sess.userId]); }
-      else { const idx = tasks.findIndex(t => t.id == taskId); if (idx !== -1) tasks.splice(idx, 1); }
-      return sendJson(res, { success: true });
+      try {
+        const taskId = pathname.split("/")[3];
+        if (dbMode === "mysql") { await dbQuery("DELETE FROM tasks WHERE id=? AND teacher_id=?", [taskId, sess.userId]); }
+        else { const idx = tasks.findIndex(t => t.id == taskId); if (idx !== -1) tasks.splice(idx, 1); }
+        return sendJson(res, { success: true });
+      } catch (err) {
+        console.error("[server] Task delete error:", err);
+        return sendJson(res, { error: "Database error: " + err.message }, 500);
+      }
     }
 
     // Tasks/status: PUT
     if (pathname === "/api/tasks/status" && method === "PUT" && sess.role === "teacher") {
-      const { task_id, status } = json;
-      if (dbMode === "mysql") { await dbQuery("UPDATE tasks SET status=? WHERE id=?", [status, task_id]); }
-      else { const t = tasks.find(t => t.id == task_id); if (t) t.status = status; }
-      return sendJson(res, { success: true });
+      try {
+        const { task_id, status } = json;
+        if (dbMode === "mysql") { await dbQuery("UPDATE tasks SET status=? WHERE id=?", [status, task_id]); }
+        else { const t = tasks.find(t => t.id == task_id); if (t) t.status = status; }
+        return sendJson(res, { success: true });
+      } catch (err) {
+        console.error("[server] Tasks status error:", err);
+        return sendJson(res, { error: "Database error: " + err.message }, 500);
+      }
     }
 
     // Submissions: GET
@@ -422,41 +803,43 @@ const server = http.createServer(async (req, res) => {
 
     // Submissions: POST (text)
     if (pathname === "/api/submissions" && method === "POST" && !req.headers['content-type']?.includes('multipart')) {
-      const s = { id: genId(), task_assignment_id: json.task_assignment_id, student_id: sess.userId, description: json.description, link_url: json.link_url, submitted_at: new Date().toISOString() };
-      if (dbMode === "mysql") { await dbQuery("INSERT INTO submissions (task_assignment_id, student_id, description, link_url, submitted_at) VALUES (?, ?, ?, ?, NOW())", [json.task_assignment_id, sess.userId, json.description, json.link_url || null]); await dbQuery("UPDATE task_assignments SET status='Completed' WHERE id=?", [json.task_assignment_id]); await dbQuery("INSERT INTO activity_logs (user_id, action, logged_at) VALUES (?, ?, NOW())", [sess.userId, "Submitted task #" + json.task_assignment_id]); }
-      else { submissions.push(s); const ta = task_assignments.find(ta => ta.id === json.task_assignment_id); if (ta) ta.status = "Completed"; activities.push({ id: genId(), user_id: sess.userId, action: "Submitted task #" + json.task_assignment_id, logged_at: new Date().toISOString() }); }
-      return sendJson(res, s);
+      try {
+        const s = { id: genId(), task_assignment_id: json.task_assignment_id, student_id: sess.userId, description: json.description, link_url: json.link_url, submitted_at: new Date().toISOString() };
+        if (dbMode === "mysql") {
+          await dbQuery.transactional(async (conn) => {
+            const [ir] = await conn.execute("INSERT INTO submissions (task_assignment_id, student_id, description, link_url, submitted_at) VALUES (?, ?, ?, ?, NOW())", [json.task_assignment_id, sess.userId, json.description, json.link_url || null]);
+            s.id = ir.insertId;
+            await conn.execute("UPDATE task_assignments SET status='In Progress' WHERE id=?", [json.task_assignment_id]);
+            await conn.execute("INSERT INTO activity_logs (user_id, action, logged_at) VALUES (?, ?, NOW())", [sess.userId, "Submitted task #" + json.task_assignment_id]);
+          });
+        } else { submissions.push(s); const ta = task_assignments.find(ta => ta.id === json.task_assignment_id); if (ta) ta.status = "In Progress"; activities.push({ id: genId(), user_id: sess.userId, action: "Submitted task #" + json.task_assignment_id, logged_at: new Date().toISOString() }); }
+        return sendJson(res, s);
+      } catch (err) {
+        console.error("[server] Submission create error:", err);
+        return sendJson(res, { error: "Database error: " + err.message }, 500);
+      }
     }
 
-    // Submissions: POST (file upload)
-    if (pathname === "/api/submissions/upload" && method === "POST") {
-      parseMultipart(req, res, async function(parsed) {
-        const file = parsed.files['file'];
-        const description = parsed.fields['description'] || '';
-        const link_url = parsed.fields['link_url'] || null;
-        const task_assignment_id = parsed.fields['task_assignment_id'] || 0;
-        const s = { id: genId(), task_assignment_id: parseInt(task_assignment_id), student_id: sess.userId, file_path: file ? file.filename : null, description, link_url, submitted_at: new Date().toISOString() };
-        if (dbMode === "mysql") { await dbQuery("INSERT INTO submissions (task_assignment_id, student_id, file_path, description, link_url, submitted_at) VALUES (?, ?, ?, ?, ?, NOW())", [parseInt(task_assignment_id), sess.userId, file ? file.filename : null, description, link_url]); if (task_assignment_id) await dbQuery("UPDATE task_assignments SET status='Completed' WHERE id=?", [task_assignment_id]); await dbQuery("INSERT INTO activity_logs (user_id, action, logged_at) VALUES (?, ?, NOW())", [sess.userId, file ? "Uploaded file: " + file.originalname : "Submitted text"]); }
-        else { submissions.push(s); if (task_assignment_id) { const ta = task_assignments.find(ta => ta.id === parseInt(task_assignment_id)); if (ta) ta.status = "Completed"; } activities.push({ id: genId(), user_id: sess.userId, action: file ? "Uploaded file: " + file.originalname : "Submitted text", logged_at: new Date().toISOString() }); }
-        return sendJson(res, { ...s, file_url: file ? "/uploads/" + file.filename : null, file_name: file ? file.originalname : null });
-      });
-      return;
-    }
 
     // Submissions/review: POST
     if (pathname.match(/^\/api\/submissions\/\d+\/review$/) && method === "POST" && sess.role === "teacher") {
-      const submissionId = pathname.split("/")[3];
-      const { score, status, feedback } = json;
-      if (dbMode === "mysql") { await dbQuery("INSERT INTO task_reviews (submission_id, teacher_id, score, status, feedback, reviewed_at) VALUES (?, ?, ?, ?, ?, NOW())", [submissionId, sess.userId, score, status, feedback]); await dbQuery("UPDATE task_assignments SET status=? WHERE id=(SELECT task_assignment_id FROM submissions WHERE id=?)", [status === "Approved" ? "Completed" : "In Progress", submissionId]); const [sub] = await dbQuery("SELECT student_id FROM submissions WHERE id=?", [submissionId]); if (sub.length) await dbQuery("INSERT INTO notifications (user_id, message, type, created_at) VALUES (?, ?, 'review', NOW())", [sub[0].student_id, "Your submission has been " + status.toLowerCase()]); return sendJson(res, { success: true }); }
-      else { task_reviews.push({ id: genId(), submission_id: submissionId, teacher_id: sess.userId, score, status, feedback, reviewed_at: new Date().toISOString() }); const sub = submissions.find(s => s.id == submissionId); if (sub) { const ta = task_assignments.find(ta => ta.id === sub.task_assignment_id); if (ta) ta.status = status === "Approved" ? "Completed" : "In Progress"; notifications.push({ id: genId(), user_id: sub.student_id, message: "Your submission has been " + status.toLowerCase(), type: "review", created_at: new Date().toISOString() }); } return sendJson(res, { success: true }); }
+      try {
+        const submissionId = parseInt(pathname.split("/")[3]);
+        const { score, status, feedback } = json;
+        if (dbMode === "mysql") { await dbQuery("INSERT INTO task_reviews (submission_id, teacher_id, score, status, feedback, reviewed_at) VALUES (?, ?, ?, ?, ?, NOW())", [submissionId, sess.userId, score, status, feedback]); await dbQuery("UPDATE task_assignments SET status=? WHERE id=(SELECT task_assignment_id FROM submissions WHERE id=?)", [status === "Approved" ? "Completed" : "In Progress", submissionId]); const [sub] = await dbQuery("SELECT student_id FROM submissions WHERE id=?", [submissionId]); if (sub.length) await dbQuery("INSERT INTO notifications (user_id, message, type, created_at) VALUES (?, ?, 'review', NOW())", [sub[0].student_id, "Your submission has been " + status.toLowerCase()]); return sendJson(res, { success: true }); }
+        else { task_reviews.push({ id: genId(), submission_id: submissionId, teacher_id: sess.userId, score, status, feedback, reviewed_at: new Date().toISOString() }); const sub = submissions.find(s => s.id == submissionId); if (sub) { const ta = task_assignments.find(ta => ta.id === sub.task_assignment_id); if (ta) ta.status = status === "Approved" ? "Completed" : "In Progress"; notifications.push({ id: genId(), user_id: sub.student_id, message: "Your submission has been " + status.toLowerCase(), type: "review", created_at: new Date().toISOString() }); } return sendJson(res, { success: true }); }
+      } catch (err) {
+        console.error("[server] Submission review error:", err);
+        return sendJson(res, { error: "Database error: " + err.message }, 500);
+      }
     }
 
     // Task reviews: GET
     if (pathname === "/api/task_reviews" && method === "GET") {
       if (dbMode === "mysql") {
-        if (sess.role === "teacher") { const reviews = await dbQuery("SELECT tr.*, sb.id as submission_id, u.name as student_name, t.title as task_title FROM task_reviews tr JOIN submissions sb ON tr.submission_id=sb.id JOIN users u ON sb.student_id=u.id JOIN tasks t ON sb.task_assignment_id=t.id WHERE t.teacher_id=? ORDER BY tr.reviewed_at DESC", [sess.userId]); return sendJson(res, reviews); }
-        const reviews = await dbQuery("SELECT tr.*, sb.id as submission_id, u.name as student_name, t.title as task_title FROM task_reviews tr JOIN submissions sb ON tr.submission_id=sb.id JOIN users u ON sb.student_id=u.id JOIN tasks t ON sb.task_assignment_id=t.id WHERE sb.student_id=? ORDER BY tr.reviewed_at DESC", [sess.userId]); return sendJson(res, reviews);
-      } else { const reviews = task_reviews.map(tr => { const sub = submissions.find(s => s.id === tr.submission_id); const u = users.find(u => u.id === sub?.student_id); const t = tasks.find(t => t.id === sub?.task_assignment_id); return { ...tr, student_name: u?.name, task_title: t?.title }; }); return sendJson(res, reviews); }
+        if (sess.role === "teacher") { const reviews = await dbQuery("SELECT tr.*, sb.id as submission_id, u.name as student_name, t.title as task_title FROM task_reviews tr JOIN submissions sb ON tr.submission_id=sb.id JOIN users u ON sb.student_id=u.id JOIN task_assignments ta ON sb.task_assignment_id=ta.id JOIN tasks t ON ta.task_id=t.id WHERE t.teacher_id=? ORDER BY tr.reviewed_at DESC", [sess.userId]); return sendJson(res, reviews); }
+        const reviews = await dbQuery("SELECT tr.*, sb.id as submission_id, u.name as student_name, t.title as task_title FROM task_reviews tr JOIN submissions sb ON tr.submission_id=sb.id JOIN users u ON sb.student_id=u.id JOIN task_assignments ta ON sb.task_assignment_id=ta.id JOIN tasks t ON ta.task_id=t.id WHERE sb.student_id=? ORDER BY tr.reviewed_at DESC", [sess.userId]); return sendJson(res, reviews);
+      } else { const reviews = task_reviews.map(tr => { const sub = submissions.find(s => s.id === tr.submission_id); const ta = task_assignments.find(ta => ta.id === sub?.task_assignment_id); const u = users.find(u => u.id === sub?.student_id); const t = tasks.find(t => t.id === ta?.task_id); return { ...tr, student_name: u?.name, task_title: t?.title }; }); return sendJson(res, reviews); }
     }
 
     // Announcements: GET
@@ -470,18 +853,28 @@ const server = http.createServer(async (req, res) => {
 
     // Announcements: POST
     if (pathname === "/api/announcements" && method === "POST" && sess.role === "teacher") {
-      const { course_id, title, message } = json;
-      if (dbMode === "mysql") { await dbQuery("INSERT INTO announcements (course_id, title, message, posted_by) VALUES (?, ?, ?, ?)", [course_id, title, message, sess.userId]); const students = await dbQuery("SELECT student_id FROM course_students WHERE course_id=?", [course_id]); for (const st of students) await dbQuery("INSERT INTO notifications (user_id, message, type, created_at) VALUES (?, ?, 'announcement', NOW())", [st.student_id, "New announcement: " + title]); }
-      else { announcements.push({ id: genId(), course_id, title, message, posted_by: sess.userId, posted_at: new Date().toISOString() }); const students = course_students.filter(cs => cs.course_id == course_id); for (const st of students) notifications.push({ id: genId(), user_id: st.student_id, message: "New announcement: " + title, type: "announcement", created_at: new Date().toISOString() }); }
-      return sendJson(res, { success: true });
+      try {
+        const { course_id, title, message } = json;
+        if (dbMode === "mysql") { await dbQuery("INSERT INTO announcements (course_id, title, message, posted_by) VALUES (?, ?, ?, ?)", [course_id, title, message, sess.userId]); const students = await dbQuery("SELECT student_id FROM course_students WHERE course_id=?", [course_id]); for (const st of students) await dbQuery("INSERT INTO notifications (user_id, message, type, created_at) VALUES (?, ?, 'announcement', NOW())", [st.student_id, "New announcement: " + title]); }
+        else { announcements.push({ id: genId(), course_id, title, message, posted_by: sess.userId, posted_at: new Date().toISOString() }); const students = course_students.filter(cs => cs.course_id == course_id); for (const st of students) notifications.push({ id: genId(), user_id: st.student_id, message: "New announcement: " + title, type: "announcement", created_at: new Date().toISOString() }); }
+        return sendJson(res, { success: true });
+      } catch (err) {
+        console.error("[server] Announcement create error:", err);
+        return sendJson(res, { error: "Database error: " + err.message }, 500);
+      }
     }
 
     // Announcements: DELETE
     if (pathname.match(/^\/api\/announcements\/\d+$/) && method === "DELETE" && sess.role === "teacher") {
-      const annId = pathname.split("/")[3];
-      if (dbMode === "mysql") { await dbQuery("DELETE FROM announcements WHERE id=? AND posted_by=?", [annId, sess.userId]); await dbQuery("INSERT INTO activity_logs (user_id, action, entity_type, entity_id, logged_at) VALUES (?, ?, ?, ?, NOW())", [sess.userId, "Deleted announcement #" + annId, "announcement", annId]); }
-      else { const idx = announcements.findIndex(a => a.id == annId); if (idx !== -1) announcements.splice(idx, 1); }
-      return sendJson(res, { success: true });
+      try {
+        const annId = pathname.split("/")[3];
+        if (dbMode === "mysql") { await dbQuery("DELETE FROM announcements WHERE id=? AND posted_by=?", [annId, sess.userId]); await dbQuery("INSERT INTO activity_logs (user_id, action, entity_type, entity_id, logged_at) VALUES (?, ?, ?, ?, NOW())", [sess.userId, "Deleted announcement #" + annId, "announcement", annId]); }
+        else { const idx = announcements.findIndex(a => a.id == annId); if (idx !== -1) announcements.splice(idx, 1); }
+        return sendJson(res, { success: true });
+      } catch (err) {
+        console.error("[server] Announcement delete error:", err);
+        return sendJson(res, { error: "Database error: " + err.message }, 500);
+      }
     }
 
     // Announcements: unread count
@@ -502,60 +895,80 @@ const server = http.createServer(async (req, res) => {
 
     // Notifications: Mark as read
     if (pathname.match(/^\/api\/notifications\/\d+\/read$/) && method === "PUT") {
-      const notifId = pathname.split("/")[3];
-      if (dbMode === "mysql") {
-        await dbQuery("UPDATE notifications SET is_read=1 WHERE id=? AND user_id=?", [notifId, sess.userId]);
+      try {
+        const notifId = pathname.split("/")[3];
+        if (dbMode === "mysql") {
+          await dbQuery("UPDATE notifications SET is_read=1 WHERE id=? AND user_id=?", [notifId, sess.userId]);
+          return sendJson(res, { success: true });
+        }
+        const n = notifications.find(n => n.id == notifId && n.user_id === sess.userId);
+        if (n) n.is_read = 1;
         return sendJson(res, { success: true });
+      } catch (err) {
+        console.error("[server] Notification read error:", err);
+        return sendJson(res, { error: "Database error: " + err.message }, 500);
       }
-      const n = notifications.find(n => n.id == notifId && n.user_id === sess.userId);
-      if (n) n.is_read = 1;
-      return sendJson(res, { success: true });
     }
 
     // Notifications: Mark all as read
     if (pathname === "/api/notifications/read-all" && method === "PUT") {
-      if (dbMode === "mysql") { await dbQuery("UPDATE notifications SET is_read=1 WHERE user_id=?", [sess.userId]); }
-      else { notifications.forEach(n => { if (n.user_id === sess.userId) n.is_read = 1; }); }
-      return sendJson(res, { success: true });
+      try {
+        if (dbMode === "mysql") { await dbQuery("UPDATE notifications SET is_read=1 WHERE user_id=?", [sess.userId]); }
+        else { notifications.forEach(n => { if (n.user_id === sess.userId) n.is_read = 1; }); }
+        return sendJson(res, { success: true });
+      } catch (err) {
+        console.error("[server] Notification read-all error:", err);
+        return sendJson(res, { error: "Database error: " + err.message }, 500);
+      }
     }
 
     // Notifications: Delete
     if (pathname.match(/^\/api\/notifications\/\d+$/) && method === "DELETE") {
-      const notifId = pathname.split("/")[3];
-      if (dbMode === "mysql") { await dbQuery("DELETE FROM notifications WHERE id=? AND user_id=?", [notifId, sess.userId]); }
-      else { const idx = notifications.findIndex(n => n.id == notifId && n.user_id === sess.userId); if (idx !== -1) notifications.splice(idx, 1); }
-      return sendJson(res, { success: true });
+      try {
+        const notifId = pathname.split("/")[3];
+        if (dbMode === "mysql") { await dbQuery("DELETE FROM notifications WHERE id=? AND user_id=?", [notifId, sess.userId]); }
+        else { const idx = notifications.findIndex(n => n.id == notifId && n.user_id === sess.userId); if (idx !== -1) notifications.splice(idx, 1); }
+        return sendJson(res, { success: true });
+      } catch (err) {
+        console.error("[server] Notification delete error:", err);
+        return sendJson(res, { error: "Database error: " + err.message }, 500);
+      }
     }
 
     // Deadlines: check overdue
     if (pathname === "/api/deadlines/check" && method === "POST") {
-      if (dbMode === "mysql") {
-        const now = new Date().toISOString().split("T")[0];
-        const overdueTasks = await dbQuery("SELECT id, title FROM tasks WHERE deadline < ? AND status != 'Completed' AND status != 'Overdue'", [now]);
-        for (const t of overdueTasks) { await dbQuery("UPDATE tasks SET status='Overdue' WHERE id=?", [t.id]); await dbQuery("INSERT INTO activity_logs (user_id, action, entity_type, entity_id, logged_at) VALUES (?, ?, ?, ?, NOW())", [sess.userId, "Task marked overdue: " + t.title, "task", t.id]); }
-        const overdueAssigns = await dbQuery("SELECT ta.id, ta.task_id, t.title, ta.student_id FROM task_assignments ta JOIN tasks t ON ta.task_id=t.id WHERE ta.deadline < ? AND ta.status != 'Completed' AND ta.status != 'Overdue'", [now]);
-        for (const a of overdueAssigns) { await dbQuery("UPDATE task_assignments SET status='Overdue' WHERE id=?", [a.id]); await dbQuery("INSERT INTO notifications (user_id, message, type, created_at) VALUES (?, ?, 'deadline', NOW())", [a.student_id, "Your task " + a.title + " is now overdue!"]); }
-        return sendJson(res, { tasksOverdue: overdueTasks.length, assignsOverdue: overdueAssigns.length });
+      try {
+        if (dbMode === "mysql") {
+          const now = new Date().toISOString().split("T")[0];
+          const overdueTasks = await dbQuery("SELECT id, title FROM tasks WHERE deadline < ? AND status != 'Completed' AND status != 'Overdue'", [now]);
+          for (const t of overdueTasks) { await dbQuery("UPDATE tasks SET status='Overdue' WHERE id=?", [t.id]); await dbQuery("INSERT INTO activity_logs (user_id, action, entity_type, entity_id, logged_at) VALUES (?, ?, ?, ?, NOW())", [sess.userId, "Task marked overdue: " + t.title, "task", t.id]); }
+          const overdueAssigns = await dbQuery("SELECT ta.id, ta.task_id, t.title, ta.student_id FROM task_assignments ta JOIN tasks t ON ta.task_id=t.id WHERE ta.deadline < ? AND ta.status != 'Completed' AND ta.status != 'Overdue'", [now]);
+          for (const a of overdueAssigns) { await dbQuery("UPDATE task_assignments SET status='Overdue' WHERE id=?", [a.id]); await dbQuery("INSERT INTO notifications (user_id, message, type, created_at) VALUES (?, ?, 'deadline', NOW())", [a.student_id, "Your task " + a.title + " is now overdue!"]); }
+          return sendJson(res, { tasksOverdue: overdueTasks.length, assignsOverdue: overdueAssigns.length });
+        }
+        return sendJson(res, { tasksOverdue: 0, assignsOverdue: 0 });
+      } catch (err) {
+        console.error("[server] Deadlines check error:", err);
+        return sendJson(res, { error: "Database error: " + err.message }, 500);
       }
-      return sendJson(res, { tasksOverdue: 0, assignsOverdue: 0 });
     }
 
     // Deadlines: upcoming
     if (pathname === "/api/deadlines/upcoming" && method === "GET") {
       if (dbMode === "mysql") {
         const now = new Date().toISOString().split("T")[0];
-        const weekLater = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
-        if (sess.role === "teacher") { const d = await dbQuery("SELECT t.id, t.title, t.deadline, t.priority, c.course_code FROM tasks t JOIN courses c ON t.course_id=c.id WHERE t.deadline BETWEEN ? AND ? AND t.status != 'Completed' ORDER BY t.deadline ASC", [now, weekLater]); return sendJson(res, d); }
+        const monthLater = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+        if (sess.role === "teacher") { const d = await dbQuery("SELECT t.id, t.title, t.deadline, t.priority, c.course_code, t.assignment_type, t.project_id FROM tasks t JOIN courses c ON t.course_id=c.id WHERE t.deadline BETWEEN ? AND ? AND t.status != 'Completed' ORDER BY t.deadline ASC", [now, monthLater]); return sendJson(res, d); }
         else {
-          const allAssigns = await dbQuery("SELECT ta.id, ta.task_id, ta.deadline, ta.status FROM task_assignments ta WHERE ta.student_id=?", [sess.userId]);
-          const d = await dbQuery("SELECT ta.id, ta.task_id, t.title, t.deadline, t.priority, ta.weight_percent, c.course_code FROM task_assignments ta JOIN tasks t ON ta.task_id=t.id JOIN courses c ON t.course_id=c.id LEFT JOIN projects p ON ta.project_id=p.id WHERE ta.student_id=? AND ta.deadline BETWEEN ? AND ? AND ta.status != 'Completed' ORDER BY ta.deadline ASC", [sess.userId, now, weekLater]);
+          const d = await dbQuery("SELECT ta.id, ta.task_id, t.title, t.deadline, t.priority, t.assignment_type, ta.weight_percent, c.course_code FROM task_assignments ta JOIN tasks t ON ta.task_id=t.id JOIN courses c ON t.course_id=c.id LEFT JOIN projects p ON t.project_id=p.id WHERE ta.student_id=? AND ta.deadline BETWEEN ? AND ? AND ta.status != 'Completed' ORDER BY ta.deadline ASC", [sess.userId, now, monthLater]);
+          return sendJson(res, d || []);
         }
       }
       return sendJson(res, []);
     }
 
     // Contributions: Calculate + get
-    if (pathname.startsWith("/api/contributions/") && method === "GET") {
+    if (pathname.startsWith("/api/contributions/") && method === "GET" && !pathname.endsWith("/history") && !pathname.endsWith("/override")) {
       const projectId = pathname.split("/").pop();
       if (dbMode === "mysql") {
         const m = await dbQuery("SELECT u.id, u.name, ta.weight_percent, COALESCE(MAX(tr.score), 0) as score, COALESCE(MAX(tr.status), 'Pending') as review_status FROM task_assignments ta JOIN users u ON ta.student_id=u.id LEFT JOIN submissions s ON s.task_assignment_id=ta.id LEFT JOIN task_reviews tr ON tr.submission_id=s.id WHERE ta.project_id=? GROUP BY u.id, u.name, ta.weight_percent", [projectId]);
@@ -567,18 +980,23 @@ const server = http.createServer(async (req, res) => {
 
     // Contributions: override
     if (pathname.startsWith("/api/contributions/") && pathname.endsWith("/override") && method === "PUT" && sess.role === "teacher") {
-      const projectId = pathname.split("/")[3];
-      const { student_id, new_weight, reason } = json;
-      if (dbMode === "mysql") {
-        const [ta] = await dbQuery("SELECT weight_percent FROM task_assignments WHERE project_id=? AND student_id=?", [projectId, student_id]);
-        if (!ta.length) return sendJson(res, { error: "Member not found" }, 404);
-        const original_weight = ta[0].weight_percent;
-        await dbQuery("UPDATE task_assignments SET weight_percent=? WHERE project_id=? AND student_id=?", [new_weight, projectId, student_id]);
-        await dbQuery("INSERT INTO contribution_adjustments (project_id, student_id, original_percent, adjusted_percent, reason, adjusted_by, adjusted_at) VALUES (?, ?, ?, ?, ?, ?, NOW())", [projectId, student_id, original_weight, new_weight, reason || "", sess.userId]);
-        await dbQuery("INSERT INTO activity_logs (user_id, action, entity_type, entity_id, logged_at) VALUES (?, ?, ?, ?, NOW())", [sess.userId, "Overrode weight: " + original_weight + "% to " + new_weight + "% for student " + student_id, "contribution", projectId]);
-        return sendJson(res, { success: true });
+      try {
+        const projectId = pathname.split("/")[3];
+        const { student_id, new_weight, reason } = json;
+        if (dbMode === "mysql") {
+          const ta = await dbQuery("SELECT weight_percent FROM task_assignments WHERE project_id=? AND student_id=?", [projectId, student_id]);
+          if (!ta.length) return sendJson(res, { error: "Member not found" }, 404);
+          const original_weight = ta[0].weight_percent;
+          await dbQuery("UPDATE task_assignments SET weight_percent=? WHERE project_id=? AND student_id=?", [new_weight, projectId, student_id]);
+          await dbQuery("INSERT INTO contribution_adjustments (project_id, student_id, original_percent, adjusted_percent, reason, adjusted_by, adjusted_at) VALUES (?, ?, ?, ?, ?, ?, NOW())", [projectId, student_id, original_weight, new_weight, reason || "", sess.userId]);
+          await dbQuery("INSERT INTO activity_logs (user_id, action, entity_type, entity_id, logged_at) VALUES (?, ?, ?, ?, NOW())", [sess.userId, "Overrode weight: " + original_weight + "% to " + new_weight + "% for student " + student_id, "contribution", projectId]);
+          return sendJson(res, { success: true });
+        }
+        return sendJson(res, { success: false, error: "MySQL mode required" }, 500);
+      } catch (err) {
+        console.error("[server] Contribution override error:", err);
+        return sendJson(res, { error: "Database error: " + err.message }, 500);
       }
-      return sendJson(res, { success: false, error: "MySQL mode required" }, 500);
     }
 
     // Contributions: history
@@ -590,15 +1008,20 @@ const server = http.createServer(async (req, res) => {
 
     // Peer Reviews: Submit
     if (pathname === "/api/peer_reviews" && method === "POST" && sess.role === "student") {
-      const { project_id, reviewed_student_id, contribution_score, cooperation_score, communication_score, responsibility_score, comment } = json;
-      if (dbMode === "mysql") {
-        const existing = await dbQuery("SELECT id FROM peer_reviews WHERE project_id=? AND reviewer_id=? AND reviewed_student_id=?", [project_id, sess.userId, reviewed_student_id]);
-        if (existing.length) return sendJson(res, { error: "Already submitted" }, 409);
-        await dbQuery("INSERT INTO peer_reviews (project_id, reviewer_id, reviewed_student_id, contribution_score, cooperation_score, communication_score, responsibility_score, comment, submitted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())", [project_id, sess.userId, reviewed_student_id, contribution_score, cooperation_score, communication_score, responsibility_score, comment || null]);
-        await dbQuery("INSERT INTO activity_logs (user_id, action, entity_type, entity_id, logged_at) VALUES (?, ?, ?, ?, NOW())", [sess.userId, "Submitted peer review for student #" + reviewed_student_id + " in project #" + project_id, "peer_review", project_id]);
-        return sendJson(res, { success: true });
+      try {
+        const { project_id, reviewed_student_id, contribution_score, cooperation_score, communication_score, responsibility_score, comment } = json;
+        if (dbMode === "mysql") {
+          const existing = await dbQuery("SELECT id FROM peer_reviews WHERE project_id=? AND reviewer_id=? AND reviewed_student_id=?", [project_id, sess.userId, reviewed_student_id]);
+          if (existing.length) return sendJson(res, { error: "Already submitted" }, 409);
+          await dbQuery("INSERT INTO peer_reviews (project_id, reviewer_id, reviewed_student_id, contribution_score, cooperation_score, communication_score, responsibility_score, comment, submitted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())", [project_id, sess.userId, reviewed_student_id, contribution_score, cooperation_score, communication_score, responsibility_score, comment || null]);
+          await dbQuery("INSERT INTO activity_logs (user_id, action, entity_type, entity_id, logged_at) VALUES (?, ?, ?, ?, NOW())", [sess.userId, "Submitted peer review for student #" + reviewed_student_id + " in project #" + project_id, "peer_review", project_id]);
+          return sendJson(res, { success: true });
+        }
+        return sendJson(res, { error: "MySQL mode required" }, 500);
+      } catch (err) {
+        console.error("[server] Peer review error:", err);
+        return sendJson(res, { error: "Database error: " + err.message }, 500);
       }
-      return sendJson(res, { error: "MySQL mode required" }, 500);
     }
 
     // Peer Reviews: Get by project
@@ -633,15 +1056,29 @@ const server = http.createServer(async (req, res) => {
     // Comments: Post
     if (pathname === "/api/comments" && method === "POST" && sess.role === "student") {
       const { project_id, message } = json;
-      if (dbMode === "mysql") { await dbQuery("INSERT INTO comments (project_id, user_id, message, created_at) VALUES (?, ?, ?, NOW())", [project_id, sess.userId, message]); await dbQuery("INSERT INTO activity_logs (user_id, action, entity_type, entity_id, logged_at) VALUES (?, ?, ?, ?, NOW())", [sess.userId, "Posted comment in project #" + project_id, "comment", project_id]); const c = await dbQuery("SELECT cm.*, u.name, u.role FROM comments cm JOIN users u ON cm.user_id=u.id WHERE cm.id=(SELECT LAST_INSERT_ID())", []); return sendJson(res, c[0]); }
+      if (dbMode === "mysql") {
+        const commentResult = await dbQuery.transactional(async (conn) => {
+          const [ir] = await conn.execute("INSERT INTO comments (project_id, user_id, message, created_at) VALUES (?, ?, ?, NOW())", [project_id, sess.userId, message]);
+          const commentId = ir.insertId;
+          await conn.execute("INSERT INTO activity_logs (user_id, action, entity_type, entity_id, logged_at) VALUES (?, ?, ?, ?, NOW())", [sess.userId, "Posted comment in project #" + project_id, "comment", project_id]);
+          const c = await conn.execute("SELECT cm.*, u.name, u.role FROM comments cm JOIN users u ON cm.user_id=u.id WHERE cm.id=?", [commentId]);
+          return c[0] && c[0][0];
+        });
+        return sendJson(res, commentResult);
+      }
       return sendJson(res, { error: "MySQL mode required" }, 500);
     }
 
     // Comments: Delete
     if (pathname.match(/^\/api\/comments\/\d+$/) && method === "DELETE" && sess.role === "student") {
-      const commentId = pathname.split("/")[3];
-      if (dbMode === "mysql") { const [c] = await dbQuery("SELECT * FROM comments WHERE id=?", [commentId]); if (!c.length || c.user_id !== sess.userId) return sendJson(res, { error: "Unauthorized" }, 403); await dbQuery("DELETE FROM comments WHERE id=?", [commentId]); return sendJson(res, { success: true }); }
-      return sendJson(res, { success: false });
+      try {
+        const commentId = pathname.split("/")[3];
+        if (dbMode === "mysql") { const c = await dbQuery("SELECT * FROM comments WHERE id=?", [commentId]); if (!c.length || c[0].user_id !== sess.userId) return sendJson(res, { error: "Unauthorized" }, 403); await dbQuery("DELETE FROM comments WHERE id=?", [commentId]); return sendJson(res, { success: true }); }
+        return sendJson(res, { success: false });
+      } catch (err) {
+        console.error("[server] Comment delete error:", err);
+        return sendJson(res, { error: "Database error: " + err.message }, 500);
+      }
     }
 
     // Activities
@@ -655,33 +1092,39 @@ const server = http.createServer(async (req, res) => {
     }
 
     // Users: GET (teacher only)
-    if (pathname === "/api/users" && method === "GET" && sess.role === "teacher") {
+    if (pathname === "/api/users" && method === "GET") {
+      if (sess.role !== "teacher") return sendJson(res, { error: "Forbidden" }, 403);
       if (dbMode === "mysql") { const u = await dbQuery("SELECT id, name, email, role FROM users WHERE role='student' ORDER BY name"); return sendJson(res, u); }
       return sendJson(res, users.filter(u => u.role === "student"));
     }
 
     // Report Export: Generate HTML report
     if (pathname === "/api/reports/export" && method === "POST" && sess.role === "teacher") {
-      const { project_id, report_type } = json;
-      if (dbMode === "mysql") {
-        const project = await dbQuery("SELECT p.*, c.course_code, c.course_name FROM projects p JOIN courses c ON p.course_id=c.id WHERE p.id=?", [project_id]);
-        if (!project.length) return sendJson(res, { error: "Project not found" }, 404);
-        const members = await dbQuery("SELECT pm.*, u.name, u.email FROM project_members pm JOIN users u ON pm.student_id=u.id WHERE pm.project_id=?", [project_id]);
-        const tasks = await dbQuery("SELECT t.*, ta.weight_percent, ta.status as assign_status FROM tasks t LEFT JOIN task_assignments ta ON t.id=ta.task_id AND ta.project_id=? WHERE t.course_id=? AND t.status='Active'", [project_id, project[0].course_id]);
-        const submissions = await dbQuery("SELECT sb.*, tr.score, tr.status as review_status, tr.feedback FROM submissions sb LEFT JOIN task_reviews tr ON tr.submission_id=sb.id WHERE sb.task_assignment_id IN (SELECT id FROM task_assignments WHERE project_id=?)", [project_id]);
-        const peerReviews = await dbQuery("SELECT pr.*, u.name as reviewer_name FROM peer_reviews pr JOIN users u ON pr.reviewer_id=u.id WHERE pr.project_id=?", [project_id]);
-        const comments = await dbQuery("SELECT cm.*, u.name FROM comments cm JOIN users u ON cm.user_id=u.id WHERE cm.project_id=?", [project_id]);
-        const reviews = await dbQuery("SELECT tr.*, u.name as student_name FROM task_reviews tr JOIN submissions sb ON tr.submission_id=sb.id JOIN users u ON sb.student_id=u.id WHERE sb.task_assignment_id IN (SELECT id FROM task_assignments WHERE project_id=?)", [project_id]);
-        let html = generateReportHTML({ project: project[0], members, tasks, submissions, peerReviews, comments, reviews, report_type, generated_at: new Date().toISOString() });
-        await dbQuery("INSERT INTO report_exports (teacher_id, project_id, report_type, generated_at) VALUES (?, ?, ?, NOW())", [sess.userId, project_id, report_type]);
-        return sendJson(res, { html, filename: "report_" + project[0].course_code + "_" + report_type + ".html" });
+      try {
+        const { project_id, report_type } = json;
+        if (dbMode === "mysql") {
+          const project = await dbQuery("SELECT p.*, c.course_code, c.course_name FROM projects p JOIN courses c ON p.course_id=c.id WHERE p.id=?", [project_id]);
+          if (!project.length) return sendJson(res, { error: "Project not found" }, 404);
+          const members = await dbQuery("SELECT pm.*, u.name, u.email FROM project_members pm JOIN users u ON pm.student_id=u.id WHERE pm.project_id=?", [project_id]);
+          const tasks = await dbQuery("SELECT t.*, ta.weight_percent, ta.status as assign_status FROM tasks t LEFT JOIN task_assignments ta ON t.id=ta.task_id AND ta.project_id=? WHERE t.course_id=? AND t.status='Active'", [project_id, project[0].course_id]);
+          const submissions = await dbQuery("SELECT sb.*, tr.score, tr.status as review_status, tr.feedback FROM submissions sb LEFT JOIN task_reviews tr ON tr.submission_id=sb.id WHERE sb.task_assignment_id IN (SELECT id FROM task_assignments WHERE project_id=?)", [project_id]);
+          const peerReviews = await dbQuery("SELECT pr.*, u.name as reviewer_name FROM peer_reviews pr JOIN users u ON pr.reviewer_id=u.id WHERE pr.project_id=?", [project_id]);
+          const comments = await dbQuery("SELECT cm.*, u.name FROM comments cm JOIN users u ON cm.user_id=u.id WHERE cm.project_id=?", [project_id]);
+          const reviews = await dbQuery("SELECT tr.*, u.name as student_name FROM task_reviews tr JOIN submissions sb ON tr.submission_id=sb.id JOIN users u ON sb.student_id=u.id WHERE sb.task_assignment_id IN (SELECT id FROM task_assignments WHERE project_id=?)", [project_id]);
+          let html = generateReportHTML({ project: project[0], members, tasks, submissions, peerReviews, comments, reviews, report_type, generated_at: new Date().toISOString() });
+          await dbQuery("INSERT INTO report_exports (teacher_id, project_id, report_type, generated_at) VALUES (?, ?, ?, NOW())", [sess.userId, project_id, report_type]);
+          return sendJson(res, { html, filename: "report_" + project[0].course_code + "_" + report_type + ".html" });
+        }
+        return sendJson(res, { error: "MySQL mode required" }, 500);
+      } catch (err) {
+        console.error("[server] Report export error:", err);
+        return sendJson(res, { error: "Database error: " + err.message }, 500);
       }
-      return sendJson(res, { error: "MySQL mode required" }, 500);
     }
 
     // Report Export: Get history
     if (pathname === "/api/reports/export/history" && method === "GET" && sess.role === "teacher") {
-      if (dbMode === "mysql") { const h = await dbQuery("SELECT re.*, p.title as project_title, p.group_name FROM report_exports re LEFT JOIN projects p ON re.project_id=p.id WHERE re.teacher_id=? ORDER BY re.generated_at DESC LIMIT 20", [sess.userId]); return sendJson(res, h); }
+      if (dbMode === "mysql") { const h = await dbQuery("SELECT re.*, p.title as project_title FROM report_exports re LEFT JOIN projects p ON re.project_id=p.id WHERE re.teacher_id=? ORDER BY re.generated_at DESC LIMIT 20", [sess.userId]); return sendJson(res, h); }
       return sendJson(res, []);
     }
 
@@ -694,6 +1137,11 @@ const server = http.createServer(async (req, res) => {
 
     return sendJson(res, { error: "Not found" }, 404);
   });
+});
+
+// Prevent unhandled promise rejections from crashing the server
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("[server] Unhandled Rejection:", reason?.message || reason);
 });
 
 function generateReportHTML(data) {
